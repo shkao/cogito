@@ -42,10 +42,18 @@ Sarkar names three design principles: preserve material engagement, offer produc
 
 — Sarkar, A. (2025). Artificial Intelligence as a Tool for Thought. TEDAI Vienna. https://www.microsoft.com/en-us/research/wp-content/uploads/2025/11/TEDAI_2025_AI_as_Tool_for_Thought_V1.pdf
 
+## Chapter Progress Bar
+
+Reading a paper is easier when you know where you are in its argument. The introduction, methods, results, and discussion ask different things from the reader. Losing track of structure is one reason readers drift into passive scanning.
+
+A persistent progress bar shows position within the current chapter or section, drawn from the document outline. Each segment corresponds to a named section. The reader sees how far into the current section they are and what comes next.
+
+The bar does not track time or pace. It tracks structure. The goal is orientation, not performance measurement. A reader who knows they are two pages into a five-page methods section reads differently than one who has no sense of where the section ends.
+
 ## Animate Figure
 
 Textbook figures are static. A reader encounters a diagram of a neural network or a circuit and has to mentally reconstruct the process it represents from a frozen snapshot. Most readers just move on.
 
-The idea: a button near a figure lets the reader animate it. Click it, and the figure comes alive in place. The static image gives way to an animation that walks through the concept step by step. No separate window, no context switch. The diagram just moves.
+The idea: a button near a figure lets the reader animate it. Click it, and the figure comes alive in place. The static image becomes an animation that walks through the concept step by step, in place, with no separate window.
 
 Each step highlights a region, shows flow between elements, and pairs with a short explanation. The reader controls the pace: play, pause, step forward, step back, reset. When done, the original figure returns and they keep reading.
