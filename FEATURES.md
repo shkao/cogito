@@ -32,6 +32,16 @@ Comprehension is the floor, not the goal. A word translation or a concept summar
 
 — Fu, Y., Wester, J., Van Berkel, N., & Hiniker, A. (2025). Self-Regulated Reading with AI Support: An Eight-Week Study with Students. https://arxiv.org/abs/2602.09907
 
+Sarkar (TEDAI Vienna, 2025) names this failure mode "outsourced reason" and proposes a concrete alternative: provocations. A provocation is not an answer. It raises an alternative, identifies a fallacy, or offers a counterargument. The reader can dismiss it; it is not meant to apply every time. Drosos et al. (2025) showed that provocations demonstrably restore critical thinking in AI-assisted workflows and increase outcome diversity.
+
+The implication for Cogito: a word translation is a starting point, not a destination. After showing "感知器", the tool could follow with "this term is used differently in chapter 5, does that change your reading here?" That question moves the interaction from Comprehension to Reasoning. The reader can dismiss it and move on, or pause and think.
+
+Sarkar's prototype has no chat interface. The AI responds to what the reader is doing, not to queries. Assistance is contextual and in-place, never a conversation the reader initiates from scratch.
+
+Sarkar names three design principles: preserve material engagement, offer productive resistance, scaffold metacognition. The translation card covers the first. A provocation added immediately after handles the other two.
+
+— Sarkar, A. (2025). Artificial Intelligence as a Tool for Thought. TEDAI Vienna. https://www.microsoft.com/en-us/research/wp-content/uploads/2025/11/TEDAI_2025_AI_as_Tool_for_Thought_V1.pdf
+
 ## Animate Figure
 
 Textbook figures are static. A reader encounters a diagram of a neural network or a circuit and has to mentally reconstruct the process it represents from a frozen snapshot. Most readers just move on.
