@@ -114,6 +114,63 @@ class PDFViewModel: ObservableObject {
     @Published var bookmarks: Set<Int> = []
     @Published var cornellNotes: [Int: String] = [:]
 
+    // MARK: Translation
+    @Published var selectedWord: String? = nil
+    @Published var wordTranslation: WikiTranslation? = nil
+    @Published var isLoadingTranslation = false
+    @Published var translationError: String? = nil
+    @Published var selectionYFraction: CGFloat? = nil
+    @Published var selectionOnLeftPage: Bool = false
+    @Published var translationLang: String = UserDefaults.standard.string(forKey: "translationLang") ?? "zh" {
+        didSet { UserDefaults.standard.set(translationLang, forKey: "translationLang") }
+    }
+
+    var suppressSelectionLookup = false
+    private var lookupTask: Task<Void, Never>?
+    private var selectionDebounceTask: Task<Void, Never>?
+
+    func scheduleTranslation(word: String, yFrac: CGFloat, onLeft: Bool) {
+        selectionDebounceTask?.cancel()
+        selectionDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            selectedWord = word
+            selectionYFraction = yFrac
+            selectionOnLeftPage = onLeft
+            lookupTranslation(for: word)
+        }
+    }
+
+    func lookupTranslation(for word: String) {
+        lookupTask?.cancel()
+        wordTranslation = nil
+        translationError = nil
+        isLoadingTranslation = true
+        lookupTask = Task {
+            do {
+                let result = try await WikiTranslationService.translate(word: word, targetLang: translationLang)
+                guard !Task.isCancelled else { return }
+                wordTranslation = result
+                isLoadingTranslation = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                translationError = error.localizedDescription
+                isLoadingTranslation = false
+            }
+        }
+    }
+
+    func clearTranslation() {
+        selectionDebounceTask?.cancel()
+        lookupTask?.cancel()
+        selectedWord = nil
+        wordTranslation = nil
+        translationError = nil
+        isLoadingTranslation = false
+        selectionYFraction = nil
+        selectionOnLeftPage = false
+    }
+
     weak var pdfView: PDFView?
 
     // MARK: File
@@ -271,8 +328,13 @@ class PDFViewModel: ObservableObject {
     private func highlightCurrentResult() {
         guard !searchResults.isEmpty else { return }
         let sel = searchResults[currentSearchIndex]
+        suppressSelectionLookup = true
         pdfView?.go(to: sel)
         pdfView?.setCurrentSelection(sel, animate: true)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(100))
+            self.suppressSelectionLookup = false
+        }
     }
 
     // MARK: Bookmarks

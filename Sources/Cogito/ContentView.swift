@@ -23,6 +23,7 @@ struct ContentView: View {
                     } else {
                         PDFReaderView()
                     }
+
                     if vm.isSearchBarVisible {
                         VStack {
                             SearchBarView()
@@ -30,6 +31,26 @@ struct ContentView: View {
                                 .padding(.top, 4)
                             Spacer()
                         }
+                    }
+
+                    if vm.selectedWord != nil {
+                        GeometryReader { geo in
+                            let cardWidth: CGFloat = 200
+                            let cardHeight: CGFloat = 90
+                            let yFrac = vm.selectionYFraction ?? 0.5
+                            let clampedY = max(cardHeight / 2 + 8,
+                                              min(geo.size.height - cardHeight / 2 - 8,
+                                                  geo.size.height * yFrac))
+                            // Anchor to the nearest Cornell panel: left margin or right margin
+                            let cardX: CGFloat = vm.selectionOnLeftPage
+                                ? cardWidth / 2 + 4
+                                : geo.size.width - cardWidth / 2 - 4
+                            TranslationCardView()
+                                .frame(width: cardWidth)
+                                .position(x: cardX, y: clampedY)
+                        }
+                        .allowsHitTesting(true)
+                        .transition(.opacity)
                     }
                 } else {
                     DropZoneView(openFile: vm.openFilePicker)
@@ -352,5 +373,95 @@ struct PageIndicatorView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: isEditing)
+    }
+}
+
+// MARK: - Translation Card
+
+struct TranslationCardView: View {
+    @EnvironmentObject var vm: PDFViewModel
+    @State private var showingLangPicker = false
+
+    private let langs: [(code: String, label: String)] = [
+        ("zh", "中文"), ("ja", "日本語"), ("es", "Español"),
+        ("fr", "Français"), ("de", "Deutsch"), ("ko", "한국어"),
+        ("pt", "Português"), ("it", "Italiano"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text(vm.selectedWord ?? "")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    showingLangPicker.toggle()
+                } label: {
+                    Image(systemName: "globe")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingLangPicker, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(langs, id: \.code) { lang in
+                            Button {
+                                vm.translationLang = lang.code
+                                if let word = vm.selectedWord { vm.lookupTranslation(for: word) }
+                                showingLangPicker = false
+                            } label: {
+                                HStack {
+                                    Text(lang.label).foregroundStyle(.primary)
+                                    Spacer()
+                                    if vm.translationLang == lang.code {
+                                        Image(systemName: "checkmark").font(.system(size: 10))
+                                    }
+                                }
+                                .frame(minWidth: 100)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Button { vm.clearTranslation() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if vm.isLoadingTranslation {
+                HStack(spacing: 6) {
+                    ProgressView().scaleEffect(0.65).tint(.white)
+                    Text("Looking up...").font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                }
+            } else if let t = vm.wordTranslation {
+                Text(t.targetTitle)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                if let desc = t.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(2)
+                }
+            } else if let err = vm.translationError {
+                Text(err)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange.opacity(0.85))
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
     }
 }
