@@ -48,9 +48,9 @@ struct ContentView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .toolbar { toolbarItems }
+            .navigationTitle(vm.documentTitle)
         }
-        .toolbar { toolbarItems }
-        .navigationTitle(vm.documentTitle)
     }
 
     // MARK: - Toolbar
