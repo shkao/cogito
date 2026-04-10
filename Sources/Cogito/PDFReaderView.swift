@@ -72,6 +72,13 @@ struct PDFReaderView: NSViewRepresentable {
 
         init(vm: PDFViewModel) {
             self.vm = vm
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowChangedScreen(_:)),
+                name: NSWindow.didChangeScreenNotification,
+                object: nil
+            )
         }
 
         @objc func frameChanged(_ notification: Notification) {
@@ -80,6 +87,14 @@ struct PDFReaderView: NSViewRepresentable {
 
         @objc func pageChanged(_ notification: Notification) {
             Task { @MainActor in self.vm.syncCurrentPage() }
+        }
+
+        @objc func windowChangedScreen(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow else { return }
+            Task { @MainActor [self] in
+                guard window === vm.pdfView?.window else { return }
+                vm.zoomToFit()
+            }
         }
     }
 }

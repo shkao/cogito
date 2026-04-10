@@ -58,20 +58,22 @@ struct ContentView: View {
     @ToolbarContentBuilder
     var toolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .principal) {
-            HStack(spacing: 2) {
-                Button { vm.previousPage() } label: {
-                    Image(systemName: "chevron.left")
-                }
-                .disabled(!vm.canGoBack)
-                .help("Previous Page (Cmd+Left)")
+            if vm.document != nil {
+                HStack(spacing: 2) {
+                    Button { vm.previousPage() } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!vm.canGoBack)
+                    .help("Previous Page (Cmd+Left)")
 
-                PageIndicatorView()
+                    PageIndicatorView()
 
-                Button { vm.nextPage() } label: {
-                    Image(systemName: "chevron.right")
+                    Button { vm.nextPage() } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!vm.canGoForward)
+                    .help("Next Page (Cmd+Right)")
                 }
-                .disabled(!vm.canGoForward)
-                .help("Next Page (Cmd+Right)")
             }
         }
 
@@ -308,7 +310,10 @@ struct PageIndicatorView: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
                     .focused($isFocused)
-                    .onChange(of: isFocused) { _, focused in vm.isEditingText = focused }
+                    .onChange(of: isFocused) { _, focused in
+                        vm.isEditingText = focused
+                        if !focused { isEditing = false }
+                    }
                     .onSubmit {
                         if let n = Int(inputText), n >= 1, n <= vm.totalPages {
                             vm.goToPage(n - 1)

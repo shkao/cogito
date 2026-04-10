@@ -160,7 +160,7 @@ class PDFViewModel: ObservableObject {
     private func cropMarginsVisually(in doc: PDFDocument) {
         var samples: [CGFloat] = []
 
-        for i in 0..<min(6, doc.pageCount) {
+        for i in 2..<min(8, doc.pageCount) {
             guard let page = doc.page(at: i),
                   let str = page.string, str.count > 60 else { continue }
 
@@ -180,12 +180,11 @@ class PDFViewModel: ObservableObject {
 
         guard !samples.isEmpty else { return }
         let avg = samples.reduce(0, +) / CGFloat(samples.count)
-        // Use 60% of detected margin to stay well clear of any text
         let crop = max(0, avg * 0.4)
         guard crop > 15 else { return }
 
-        // Skip page 0 (cover); apply visual crop to all other pages
-        for i in 1..<doc.pageCount {
+        // Skip pages 0-1 (cover spread); apply visual crop to content pages only
+        for i in 2..<doc.pageCount {
             guard let page = doc.page(at: i) else { continue }
             let m = page.bounds(for: .mediaBox)
             page.setBounds(
@@ -229,11 +228,12 @@ class PDFViewModel: ObservableObject {
     func zoomOut() { pdfView?.zoomOut(nil) }
     func zoomToFit() {
         guard let v = pdfView, let page = v.currentPage else { return }
-        let pageWidth = page.bounds(for: .cropBox).width
-        // In two-page mode two pages sit side by side; fit their combined width to the view.
-        let totalWidth = displayMode.isTwoPage ? pageWidth * 2 : pageWidth
-        guard totalWidth > 0 else { return }
-        let newScale = v.bounds.width / totalWidth
+        let pageBounds = page.bounds(for: .cropBox)
+        let totalWidth = displayMode.isTwoPage ? pageBounds.width * 2 : pageBounds.width
+        guard totalWidth > 0, pageBounds.height > 0 else { return }
+        let scaleByWidth = v.bounds.width / totalWidth
+        let scaleByHeight = v.bounds.height / pageBounds.height
+        let newScale = min(scaleByWidth, scaleByHeight)
         guard abs(newScale - v.scaleFactor) > 0.0001 else { return }
         v.scaleFactor = newScale
     }
