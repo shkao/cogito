@@ -22,13 +22,13 @@ Less AI involvement increases ownership without hurting comprehension. Keep AI p
 
 — Joshi, N. & Vogel, D. (2025). Designing and Evaluating AI Margin Notes in Document Reader Software. ACM CHI 2026. https://arxiv.org/abs/2509.09840
 
-Fu et al. (2025) tracked 15 undergraduates using AI while reading over eight weeks — 838 prompts across 239 sessions. The cognitive level breakdown: 59.6% Comprehension, 29.8% Reasoning, 8.5% Metacognition, 2.1% Decoding. Readers don't get stuck at Decoding; they get stuck at Comprehension.
+Fu et al. (2025) tracked 15 undergraduates using AI while reading over eight weeks, 838 prompts across 239 sessions. The cognitive level breakdown: 59.6% Comprehension, 29.8% Reasoning, 8.5% Metacognition, 2.1% Decoding. Readers don't get stuck at Decoding; they get stuck at Comprehension.
 
 Most sessions contained exactly three prompts, the assignment minimum. Under time pressure, students defaulted to the lowest-effort path regardless of their stated intentions. They knew active prompting was better and still didn't do it. The researchers called this the intention-behavior gap.
 
-The worst pattern they observed: students used AI-generated summaries to decide which sections were worth reading at all. They read through the AI instead of with it. At that point the tool isn't supporting reading, it's replacing it.
+Students also used AI-generated summaries to decide which sections were worth reading at all, effectively outsourcing the reading itself. The tool stopped supporting reading and started replacing it.
 
-Two constraints follow for Cogito. First, Comprehension is the floor, not the goal. A word translation or a concept summary keeps the reader at Comprehension. The tool needs a path upward. Second, making passive use frictionless guarantees passive use. If asking "what does this mean?" is as easy as asking "how does this connect to X?", readers will always ask the first question.
+Comprehension is the floor, not the goal. A word translation or a concept summary keeps the reader there. Making passive use frictionless guarantees passive use; if asking "what does this mean?" is as easy as asking "how does this connect to X?", readers will always ask the first question.
 
 — Fu, Y., Wester, J., Van Berkel, N., & Hiniker, A. (2025). Self-Regulated Reading with AI Support: An Eight-Week Study with Students. https://arxiv.org/abs/2602.09907
 
