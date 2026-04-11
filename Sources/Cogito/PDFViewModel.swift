@@ -1,6 +1,7 @@
 import Foundation
 import PDFKit
 import AppKit
+import UserNotifications
 
 // MARK: - Display Mode
 
@@ -38,13 +39,14 @@ enum DisplayMode: String, CaseIterable, Identifiable {
 
 enum SidebarMode: CaseIterable, Identifiable {
     var id: Self { self }
-    case outline, thumbnails, bookmarks
+    case outline, thumbnails, bookmarks, videos
 
     var icon: String {
         switch self {
         case .outline:    return "list.bullet.indent"
         case .thumbnails: return "square.grid.2x2"
         case .bookmarks:  return "bookmark"
+        case .videos:     return "video.badge.waveform"
         }
     }
 
@@ -53,6 +55,7 @@ enum SidebarMode: CaseIterable, Identifiable {
         case .outline:    return "Outline"
         case .thumbnails: return "Thumbnails"
         case .bookmarks:  return "Bookmarks"
+        case .videos:     return "Video Library"
         }
     }
 }
@@ -125,6 +128,25 @@ class PDFViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(translationLang, forKey: "translationLang") }
     }
 
+    // MARK: Video Generation
+    @Published var videoStatus: VideoStatus? = nil
+    @Published var isGeneratingVideo: Bool = false
+    @Published var videoChapterTitle: String? = nil
+    @Published var isInferringOutline: Bool = false
+    @Published var playingVideoURL: URL? = nil
+
+    @Published var videoFormat: VideoFormat = VideoFormat(rawValue: UserDefaults.standard.string(forKey: "videoFormat") ?? "") ?? .explainer {
+        didSet { UserDefaults.standard.set(videoFormat.rawValue, forKey: "videoFormat") }
+    }
+    @Published var videoStyle: VideoStyle = VideoStyle(rawValue: UserDefaults.standard.string(forKey: "videoStyle") ?? "") ?? .whiteboard {
+        didSet { UserDefaults.standard.set(videoStyle.rawValue, forKey: "videoStyle") }
+    }
+
+    private let videoService = NotebookLMService()
+    private var videoTask: Task<Void, Never>?
+    private var currentChapterPDF: URL?
+    private var outlineInferenceTask: Task<Void, Never>?
+
     var suppressSelectionLookup = false
     private var lookupTask: Task<Void, Never>?
     private var selectionDebounceTask: Task<Void, Never>?
@@ -186,7 +208,7 @@ class PDFViewModel: ObservableObject {
 
     func open(url: URL) {
         guard let doc = PDFDocument(url: url) else { return }
-        cropMarginsVisually(in: doc)  // in-memory only; never writes to file
+        cropMarginsVisually(in: doc)
         document = doc
         documentURL = url
         currentPageIndex = 0
@@ -194,7 +216,12 @@ class PDFViewModel: ObservableObject {
         searchQuery = ""
         bookmarks = []
         cornellNotes = [:]
-        outlineNodes = doc.outlineRoot.map { buildOutlineNodes(from: $0, document: doc) } ?? []
+        let nodes = doc.outlineRoot.map { buildOutlineNodes(from: $0, document: doc) } ?? []
+        outlineNodes = nodes
+        if nodes.isEmpty {
+            inferOutlineWithLLM(doc: doc)
+        }
+        refreshCachedVideos()
     }
 
     private func buildOutlineNodes(from outline: PDFOutline, document: PDFDocument) -> [OutlineNode] {
@@ -203,7 +230,15 @@ class PDFViewModel: ObservableObject {
             let label = child.label ?? ""
             let pageIndex: Int = {
                 guard let dest = child.destination, let page = dest.page else { return 0 }
-                return document.index(for: page)
+                let idx = document.index(for: page)
+                let y = dest.point.y
+                // PDFs (e.g. Packt) sometimes encode chapter destinations with
+                // kPDFDestinationUnspecifiedValue as Y, pointing to the page just
+                // before the chapter. Add 1 to land on the actual chapter start page.
+                if y >= CGFloat(Float.greatestFiniteMagnitude) * 0.5 {
+                    return min(idx + 1, document.pageCount - 1)
+                }
+                return idx
             }()
             let page = document.page(at: pageIndex)
             let pageLabel = page?.label ?? "\(pageIndex + 1)"
@@ -357,4 +392,311 @@ class PDFViewModel: ObservableObject {
 
     var canGoBack: Bool { currentPageIndex > 0 }
     var canGoForward: Bool { currentPageIndex < totalPages - 1 }
+
+    // MARK: Chapter page range
+
+    func chapterPageRange(for node: OutlineNode) -> Range<Int> {
+        guard let idx = outlineNodes.firstIndex(where: { $0.id == node.id }) else {
+            return node.pageIndex..<totalPages
+        }
+        let end = idx + 1 < outlineNodes.count ? outlineNodes[idx + 1].pageIndex : totalPages
+        return node.pageIndex..<end
+    }
+
+    // MARK: Extract chapter pages into a temp PDF
+
+    func extractChapterPDF(for node: OutlineNode) -> URL? {
+        guard let docURL = documentURL,
+              let freshDoc = PDFDocument(url: docURL) else { return nil }
+        let range = chapterPageRange(for: node)
+        let newDoc = PDFDocument()
+        for i in range {
+            guard let page = freshDoc.page(at: i) else { continue }
+            newDoc.insert(page, at: newDoc.pageCount)
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cogito-chapter-\(UUID().uuidString).pdf")
+        guard newDoc.write(to: tempURL) else { return nil }
+        return tempURL
+    }
+
+    // MARK: Video generation
+
+    private func videoOutputDir() -> URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = caches.appendingPathComponent("com.cogito.app/Videos", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private var bookHash: String {
+        documentURL.map { String(format: "%06x", abs($0.path.hashValue) & 0xFFFFFF) } ?? "000000"
+    }
+
+    private func videoPath(for title: String) -> URL {
+        let safe = title.map { c -> Character in
+            c.isLetter || c.isNumber || c == " " || c == "-" || c == "_" ? c : "_"
+        }
+        .map(String.init).joined()
+        .trimmingCharacters(in: .whitespaces)
+        return videoOutputDir().appendingPathComponent("\(safe)_\(bookHash).mp4")
+    }
+
+    func videoTitle(from url: URL) -> String {
+        let base = url.deletingPathExtension().lastPathComponent
+        guard base.count > 7, base.dropFirst(base.count - 7).first == "_" else { return base }
+        return String(base.dropLast(7)).replacingOccurrences(of: "_", with: " ")
+    }
+
+    func generateVideoOverview(for node: OutlineNode, forceRegenerate: Bool = false) {
+        guard !isGeneratingVideo else { return }
+
+        let existingVideo = videoPath(for: node.label)
+        if !forceRegenerate, FileManager.default.fileExists(atPath: existingVideo.path) {
+            videoChapterTitle = node.label
+            videoStatus = .done(videoPath: existingVideo)
+            return
+        }
+        // Remove old cached file before re-generating so the script doesn't pick it up.
+        if forceRegenerate { try? FileManager.default.removeItem(at: existingVideo) }
+
+        guard let chapterPDF = extractChapterPDF(for: node) else { return }
+        currentChapterPDF = chapterPDF
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+
+        isGeneratingVideo = true
+        videoChapterTitle = node.label
+        videoStatus = .uploading(message: "Preparing...")
+
+        let outputDir = videoOutputDir()
+
+        videoTask = Task {
+            for await status in await videoService.generateVideo(
+                pdfPath: chapterPDF,
+                outputDir: outputDir,
+                title: node.label,
+                format: videoFormat,
+                style: videoStyle
+            ) {
+                videoStatus = status
+                if status.isTerminal {
+                    isGeneratingVideo = false
+                    try? FileManager.default.removeItem(at: chapterPDF)
+                    currentChapterPDF = nil
+                    refreshCachedVideos()
+                    if status.isDone {
+                        self.sendCompletionNotification(for: node.label)
+                    }
+                }
+            }
+        }
+    }
+
+    func cancelVideoGeneration() {
+        videoTask?.cancel()
+        videoTask = nil
+        Task { await videoService.cancel() }
+        isGeneratingVideo = false
+        if let pdf = currentChapterPDF {
+            try? FileManager.default.removeItem(at: pdf)
+            currentChapterPDF = nil
+        }
+    }
+
+    func dismissVideo() {
+        videoStatus = nil
+        videoChapterTitle = nil
+    }
+
+    @Published private(set) var cachedVideos: [URL] = []
+
+    func refreshCachedVideos() {
+        let dir = videoOutputDir()
+        let hash = bookHash
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey], options: .skipsHiddenFiles
+        )) ?? []
+        cachedVideos = files
+            .filter { $0.pathExtension == "mp4" && $0.lastPathComponent.contains("_\(hash)") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    func deleteCachedVideo(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        if playingVideoURL == url { playingVideoURL = nil }
+        refreshCachedVideos()
+    }
+
+    private func sendCompletionNotification(for chapterTitle: String) {
+        // Only notify if the app is not the frontmost window — no need to interrupt the user if they're watching.
+        guard NSApp.isHidden || NSApp.windows.allSatisfy({ !$0.isKeyWindow }) else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Video ready"
+        content.body = "\"\(chapterTitle)\" overview is ready to watch"
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
+    // MARK: NotebookLM auth
+
+    var notebooklmAuthError: Bool {
+        if case .authRequired = videoStatus { return true }
+        return false
+    }
+
+    func loginToNotebookLM() {
+        // notebooklm login is interactive: opens a browser then waits for ENTER.
+        // Open Terminal.app with the command so the user can interact with it.
+        let script = """
+        tell application "Terminal"
+            activate
+            do script "python3 -m notebooklm login"
+        end tell
+        """
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+        }
+    }
+
+    // MARK: LLM-based TOC inference
+
+    private func inferOutlineWithLLM(doc: PDFDocument) {
+        isInferringOutline = true
+        outlineInferenceTask?.cancel()
+        outlineInferenceTask = Task {
+            defer { isInferringOutline = false }
+
+            let labelIndex = buildPageLabelIndex(from: doc)
+            let tocText = buildTOCText(from: doc)
+            let prompt = buildTOCPrompt(tocText)
+
+            var response = ""
+            do {
+                let stream = await LLMService.shared.generate(
+                    prompt: prompt,
+                    systemPrompt: "You parse tables of contents from PDF text. Return ONLY a valid JSON array, no other text.",
+                    maxTokens: 1024
+                )
+                for try await token in stream {
+                    if Task.isCancelled { return }
+                    response += token
+                }
+            } catch {
+                return
+            }
+
+            let nodes = parseAndValidateTOC(response: response, labelIndex: labelIndex, doc: doc)
+            if !nodes.isEmpty {
+                outlineNodes = nodes
+            }
+        }
+    }
+
+    private func buildPageLabelIndex(from doc: PDFDocument) -> [String: Int] {
+        var map: [String: Int] = [:]
+        for i in 0..<doc.pageCount {
+            if let label = doc.page(at: i)?.label, !label.isEmpty {
+                map[label] = i
+            }
+        }
+        return map
+    }
+
+    private func buildTOCText(from doc: PDFDocument) -> String {
+        let limit = min(16, doc.pageCount)
+        var parts: [String] = []
+        for i in 0..<limit {
+            guard let page = doc.page(at: i),
+                  let text = PDFTextExtractor.text(from: page) else { continue }
+            let label = page.label ?? "\(i + 1)"
+            parts.append("--- Page index \(i) (printed label: \(label)) ---\n\(text)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private func buildTOCPrompt(_ tocText: String) -> String {
+        """
+        Below is text extracted from the first pages of a PDF, with page index and printed label markers.
+        Find the table of contents and extract top-level chapter entries only (not subsections).
+
+        Return a JSON array where each object has exactly two fields:
+          "title": the chapter title as printed in the TOC
+          "page_label": the page number exactly as it appears in the TOC (e.g. "1", "45", "xii")
+
+        If no table of contents is found, return [].
+
+        \(tocText)
+        """
+    }
+
+    private func parseAndValidateTOC(
+        response: String,
+        labelIndex: [String: Int],
+        doc: PDFDocument
+    ) -> [OutlineNode] {
+        // Extract JSON array from response (LLM may add preamble/postamble)
+        guard let startRange = response.range(of: "["),
+              let endRange = response.range(of: "]", options: .backwards),
+              startRange.lowerBound <= endRange.lowerBound else { return [] }
+        let jsonStr = String(response[startRange.lowerBound...endRange.upperBound])
+        guard let data = jsonStr.data(using: .utf8),
+              let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: String]]
+        else { return [] }
+
+        var nodes: [OutlineNode] = []
+        for entry in entries {
+            guard let title = entry["title"], !title.isEmpty,
+                  let pageLabel = entry["page_label"], !pageLabel.isEmpty else { continue }
+
+            // Resolve page index via label lookup, then numeric fallback
+            var pageIndex: Int? = labelIndex[pageLabel]
+            if pageIndex == nil, let n = Int(pageLabel) {
+                let candidate = n - 1
+                if candidate >= 0 && candidate < doc.pageCount {
+                    pageIndex = candidate
+                }
+            }
+            guard let idx = pageIndex else { continue }
+
+            // Validate: check that title words appear on or near the target page
+            if !titleAppearsNearPage(title: title, pageIndex: idx, doc: doc) { continue }
+
+            let pageObj = doc.page(at: idx)
+            let displayLabel = pageObj?.label ?? "\(idx + 1)"
+            nodes.append(OutlineNode(label: title, pageIndex: idx, pageLabel: displayLabel, children: nil))
+        }
+        return nodes
+    }
+
+    private func titleAppearsNearPage(title: String, pageIndex: Int, doc: PDFDocument) -> Bool {
+        let normalized = normalize(title)
+        // Use first meaningful word (skip short words like "the", "a", "of")
+        let words = normalized.split(separator: " ").map(String.init)
+        guard let keyWord = words.first(where: { $0.count >= 4 }) ?? words.first else { return false }
+
+        // Check target page and neighbors
+        for offset in [0, 1, -1, 2] {
+            let i = pageIndex + offset
+            guard i >= 0 && i < doc.pageCount,
+                  let page = doc.page(at: i),
+                  let text = PDFTextExtractor.text(from: page) else { continue }
+            let pageNorm = normalize(text)
+            // Check within first ~600 chars (heading area)
+            let searchArea = String(pageNorm.prefix(600))
+            if searchArea.contains(keyWord) { return true }
+        }
+        return false
+    }
+
+    private func normalize(_ s: String) -> String {
+        s.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
+            .components(separatedBy: .whitespaces)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
 }

@@ -1,9 +1,11 @@
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var vm: PDFViewModel
     @State private var isDroppingFile = false
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -33,6 +35,15 @@ struct ContentView: View {
                         }
                     }
 
+                    if vm.videoStatus != nil {
+                        VStack {
+                            Spacer()
+                            VideoGenerationBannerView()
+                                .padding(.bottom, 10)
+                        }
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
                     if vm.selectedWord != nil {
                         GeometryReader { geo in
                             let cardWidth: CGFloat = 200
@@ -57,6 +68,7 @@ struct ContentView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.18), value: vm.isSearchBarVisible)
+            .animation(.easeInOut(duration: 0.2), value: vm.videoStatus == nil)
             .onDrop(of: [UTType.pdf, UTType.fileURL], isTargeted: $isDroppingFile) { providers in
                 loadDroppedPDF(from: providers)
             }
@@ -72,6 +84,13 @@ struct ContentView: View {
             .toolbar { toolbarItems }
             .navigationTitle(vm.documentTitle)
         }
+        .overlay {
+            if let url = vm.playingVideoURL {
+                VideoOverlayView(url: url) { vm.playingVideoURL = nil }
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: vm.playingVideoURL == nil)
     }
 
     // MARK: - Toolbar
@@ -141,6 +160,20 @@ struct ContentView: View {
             .help(vm.isCurrentPageBookmarked ? "Remove Bookmark (Cmd+B)" : "Add Bookmark (Cmd+B)")
             .keyboardShortcut("b", modifiers: .command)
             .disabled(vm.document == nil)
+
+            Divider()
+
+            Button {
+                showingSettings.toggle()
+            } label: {
+                Image(systemName: vm.notebooklmAuthError ? "gear.badge.exclamationmark" : "gear")
+                    .foregroundStyle(vm.notebooklmAuthError ? Color.red : Color.primary)
+            }
+            .help("Settings")
+            .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
+                NotebookLMSettingsView()
+                    .environmentObject(vm)
+            }
         }
     }
 
@@ -463,5 +496,244 @@ struct TranslationCardView: View {
         .padding(.vertical, 8)
         .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 10))
         .shadow(color: .black.opacity(0.3), radius: 8, y: 2)
+    }
+}
+
+// MARK: - Video Overlay
+//
+// Uses AVFoundation (AVPlayerLayer) instead of AVKit to avoid loading
+// _AVKit_SwiftUI, which crashes on macOS 26.3.1 beta.
+
+private final class VideoHostView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.backgroundColor = NSColor.black.cgColor
+        layer?.addSublayer(playerLayer)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
+}
+
+private struct VideoLayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> VideoHostView {
+        let v = VideoHostView()
+        v.playerLayer.player = player
+        return v
+    }
+
+    func updateNSView(_ nsView: VideoHostView, context: Context) {
+        nsView.playerLayer.player = player
+    }
+}
+
+@MainActor
+private final class VideoPlayerModel: NSObject, ObservableObject {
+    let player: AVPlayer
+    @Published var isPlaying = true
+    @Published var progress: Double = 0
+    @Published var duration: Double = 1
+    @Published var currentCaption: String? = nil
+    @Published var captionsEnabled = true
+
+    private var timeObserver: Any?
+    private var legibleOutput: AVPlayerItemLegibleOutput?
+    private var captionsTask: Task<Void, Never>?
+
+    init(url: URL) {
+        player = AVPlayer(url: url)
+    }
+
+    func start() {
+        player.play()
+        Task {
+            if let d = try? await player.currentItem?.asset.load(.duration), d.seconds > 0 {
+                duration = d.seconds
+            }
+        }
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            let s = time.seconds
+            Task { @MainActor [weak self] in self?.progress = s }
+        }
+        setupCaptions()
+    }
+
+    func stop() {
+        player.pause()
+        if let obs = timeObserver {
+            player.removeTimeObserver(obs)
+            timeObserver = nil
+        }
+        captionsTask?.cancel()
+        captionsTask = nil
+        if let out = legibleOutput {
+            player.currentItem?.remove(out)
+            legibleOutput = nil
+        }
+    }
+
+    func togglePlay() {
+        isPlaying ? player.pause() : player.play()
+        isPlaying.toggle()
+    }
+
+    func seek(to seconds: Double) {
+        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+    }
+
+    func toggleCaptions() {
+        captionsEnabled.toggle()
+        if !captionsEnabled { currentCaption = nil }
+    }
+
+    private func setupCaptions() {
+        guard let item = player.currentItem else { return }
+        captionsTask = Task {
+            // Select the best matching subtitle/caption track
+            if let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) {
+                let preferred = AVMediaSelectionGroup.mediaSelectionOptions(
+                    from: group.options,
+                    filteredAndSortedAccordingToPreferredLanguages: Locale.preferredLanguages
+                ).first ?? group.defaultOption ?? group.options.first
+                if let opt = preferred {
+                    item.select(opt, in: group)
+                }
+            }
+            // Wire up delegate to receive caption strings
+            let output = AVPlayerItemLegibleOutput(mediaSubtypesForNativeRepresentation: [])
+            output.suppressesPlayerRendering = true
+            output.setDelegate(self, queue: .main)
+            item.add(output)
+            self.legibleOutput = output
+        }
+    }
+
+    private func formatTime(_ s: Double) -> String {
+        let t = Int(max(0, s))
+        return String(format: "%d:%02d", t / 60, t % 60)
+    }
+
+    var progressText: String { formatTime(progress) + " / " + formatTime(duration) }
+}
+
+extension VideoPlayerModel: AVPlayerItemLegibleOutputPushDelegate {
+    nonisolated func legibleOutput(
+        _ output: AVPlayerItemLegibleOutput,
+        didOutputAttributedStrings strings: [NSAttributedString],
+        nativeSampleBuffers nativeSamples: [Any],
+        forItemTime itemTime: CMTime
+    ) {
+        let text = strings.first?.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { @MainActor [weak self] in
+            guard let self, self.captionsEnabled else { return }
+            self.currentCaption = text?.isEmpty == false ? text : nil
+        }
+    }
+}
+
+struct VideoOverlayView: View {
+    let url: URL
+    let onClose: () -> Void
+
+    @StateObject private var model: VideoPlayerModel
+
+    init(url: URL, onClose: @escaping () -> Void) {
+        self.url = url
+        self.onClose = onClose
+        self._model = StateObject(wrappedValue: VideoPlayerModel(url: url))
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.75)
+                .ignoresSafeArea()
+                .onTapGesture { onClose() }
+                .onExitCommand { onClose() }
+
+            VStack(spacing: 12) {
+                VideoLayerView(player: model.player)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .frame(maxWidth: 900)
+                    .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
+                    .onAppear { model.start() }
+                    .onDisappear { model.stop() }
+                    .onTapGesture { model.togglePlay() }
+                    .overlay(alignment: .topTrailing) {
+                        Button { onClose() } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 24))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(Color.white, Color.black.opacity(0.55))
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 12, y: -12)
+                    }
+                    .overlay(alignment: .bottom) {
+                        if let caption = model.currentCaption {
+                            Text(caption)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 5)
+                                .background(Color.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 5))
+                                .padding(.bottom, 14)
+                                .padding(.horizontal, 32)
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.15), value: model.currentCaption)
+                    .padding(.horizontal, 40)
+
+                // Playback controls
+                HStack(spacing: 14) {
+                    Button { model.togglePlay() } label: {
+                        Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 24)
+                    }
+                    .buttonStyle(.plain)
+
+                    Slider(value: $model.progress, in: 0...model.duration) { editing in
+                        if !editing { model.seek(to: model.progress) }
+                    }
+                    .tint(Color.white.opacity(0.85))
+
+                    Text(model.progressText)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 80, alignment: .trailing)
+
+                    Button { model.toggleCaptions() } label: {
+                        Image(systemName: model.captionsEnabled ? "captions.bubble.fill" : "captions.bubble")
+                            .font(.system(size: 14))
+                            .foregroundStyle(model.captionsEnabled ? Color.white : Color.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                    .help(model.captionsEnabled ? "Hide Captions" : "Show Captions")
+                }
+                .padding(.horizontal, 44)
+                .padding(.bottom, 8)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(true)
+        }
     }
 }

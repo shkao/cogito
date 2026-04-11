@@ -12,8 +12,11 @@ build:
 	swift build
 
 bundle: build
+	@python3 -c "import notebooklm" 2>/dev/null || (echo "Installing notebooklm-py..."; pip3 install --quiet notebooklm-py)
 	mkdir -p $(MACOS)
+	mkdir -p $(APP)/Contents/Resources/Scripts
 	/bin/cp $(BINARY) $(MACOS)/Cogito
+	/bin/cp Scripts/generate_video.py $(APP)/Contents/Resources/Scripts/
 	@if [ -f "$(MLX_METALLIB)" ]; then \
 		/bin/cp $(MLX_METALLIB) $(MACOS)/mlx.metallib; \
 		echo "Copied mlx.metallib from Python MLX."; \

@@ -35,6 +35,7 @@ struct SidebarView: View {
                 case .outline:    OutlineSidebarView()
                 case .thumbnails: ThumbnailSidebarView()
                 case .bookmarks:  BookmarkSidebarView()
+                case .videos:     VideoLibrarySidebarView()
                 }
             }
         }
@@ -49,13 +50,21 @@ struct OutlineSidebarView: View {
     var body: some View {
         if vm.outlineNodes.isEmpty {
             VStack(spacing: 8) {
-                Image(systemName: "list.bullet.indent")
-                    .font(.title2)
-                    .foregroundColor(.secondary)
-                Text(vm.document == nil ? "No document open" : "No outline available")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
+                if vm.isInferringOutline {
+                    ProgressView()
+                        .scaleEffect(0.85)
+                    Text("Detecting chapters...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Image(systemName: "list.bullet.indent")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text(vm.document == nil ? "No document open" : "No outline available")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
@@ -68,26 +77,123 @@ struct OutlineSidebarView: View {
     }
 }
 
+// MARK: - Video Library
+
+struct VideoLibrarySidebarView: View {
+    @EnvironmentObject var vm: PDFViewModel
+
+    var body: some View {
+        Group {
+            if vm.cachedVideos.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "video.slash")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.tertiary)
+                    Text("No videos yet")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("Generate a video overview from any chapter.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(vm.cachedVideos, id: \.path) { url in
+                    VideoLibraryRow(url: url)
+                }
+                .listStyle(.sidebar)
+            }
+        }
+    }
+}
+
+private struct VideoLibraryRow: View {
+    @EnvironmentObject var vm: PDFViewModel
+    let url: URL
+
+    private var title: String { vm.videoTitle(from: url) }
+
+    private var fileSize: String {
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "video.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout)
+                    .lineLimit(2)
+                Text(fileSize)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                vm.playingVideoURL = url
+            } label: {
+                Image(systemName: "play.circle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("Watch")
+        }
+        .contextMenu {
+            Button("Watch") { vm.playingVideoURL = url }
+            Divider()
+            Button("Delete", role: .destructive) { vm.deleteCachedVideo(at: url) }
+        }
+    }
+}
 struct OutlineRowView: View {
     @EnvironmentObject var vm: PDFViewModel
     let node: OutlineNode
+    @State private var isHovered = false
+
+    private var isEligibleForVideo: Bool {
+        vm.chapterPageRange(for: node).count >= 5
+    }
 
     var body: some View {
         Button {
             vm.goToPage(node.pageIndex)
         } label: {
-            HStack {
+            HStack(spacing: 4) {
                 Text(node.label)
                     .font(.callout)
                     .foregroundColor(vm.currentPageIndex == node.pageIndex ? .accentColor : .primary)
                     .lineLimit(2)
                 Spacer()
+                if isEligibleForVideo, isHovered {
+                    Button {
+                        vm.generateVideoOverview(for: node)
+                    } label: {
+                        Image(systemName: "video.badge.waveform")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Generate Video Overview for \"\(node.label)\"")
+                    .transition(.opacity)
+                }
                 Text(node.pageLabel)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.1), value: isHovered)
     }
 }
 
