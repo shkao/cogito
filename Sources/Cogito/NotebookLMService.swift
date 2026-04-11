@@ -63,13 +63,13 @@ actor NotebookLMService {
 
     func generateVideo(
         pdfPath: URL,
-        outputDir: URL,
+        outputPath: URL,
         title: String,
         format: VideoFormat = .explainer,
         style: VideoStyle = .whiteboard
     ) -> AsyncStream<VideoStatus> {
         let (stream, continuation) = AsyncStream.makeStream(of: VideoStatus.self)
-        Task { await runProcess(pdfPath: pdfPath, outputDir: outputDir, title: title, format: format, style: style, continuation: continuation) }
+        Task { await runProcess(pdfPath: pdfPath, outputPath: outputPath, title: title, format: format, style: style, continuation: continuation) }
         return stream
     }
 
@@ -82,7 +82,7 @@ actor NotebookLMService {
 
     private func runProcess(
         pdfPath: URL,
-        outputDir: URL,
+        outputPath: URL,
         title: String,
         format: VideoFormat,
         style: VideoStyle,
@@ -99,7 +99,7 @@ actor NotebookLMService {
         proc.arguments = [
             "python3", scriptPath,
             "--pdf-path", pdfPath.path,
-            "--output-dir", outputDir.path,
+            "--output-path", outputPath.path,
             "--title", title,
             "--format", format.rawValue,
             "--style", style.rawValue,
@@ -138,10 +138,11 @@ actor NotebookLMService {
         if !hadTerminalStatus {
             proc.waitUntilExit()
             let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrText = String(data: stderrData, encoding: .utf8)?
+            let stderrText = (String(data: stderrData, encoding: .utf8) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let msg = stderrText.flatMap { $0.isEmpty ? nil : $0 }
-                ?? "Process exited with code \(proc.terminationStatus)"
+            let msg = stderrText.isEmpty
+                ? "Process exited with code \(proc.terminationStatus)"
+                : stderrText
             continuation.yield(.error(msg))
         }
 

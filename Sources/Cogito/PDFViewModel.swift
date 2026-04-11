@@ -416,7 +416,10 @@ class PDFViewModel: ObservableObject {
         }
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("cogito-chapter-\(UUID().uuidString).pdf")
-        guard newDoc.write(to: tempURL) else { return nil }
+        guard newDoc.write(to: tempURL) else {
+            try? FileManager.default.removeItem(at: tempURL)
+            return nil
+        }
         return tempURL
     }
 
@@ -431,7 +434,9 @@ class PDFViewModel: ObservableObject {
     }
 
     private var bookHash: String {
-        documentURL.map { String(format: "%06x", abs($0.path.hashValue) & 0xFFFFFF) } ?? "000000"
+        // NSString.hash is stable across process launches (unlike Swift's hashValue,
+        // which is randomized per-session since Swift 4.2).
+        documentURL.map { String(format: "%06x", ($0.path as NSString).hash & 0xFFFFFF) } ?? "000000"
     }
 
     private func videoPath(for title: String) -> URL {
@@ -445,21 +450,22 @@ class PDFViewModel: ObservableObject {
 
     func videoTitle(from url: URL) -> String {
         let base = url.deletingPathExtension().lastPathComponent
+        // No underscore substitution: the name preserves spaces already, and
+        // replacing `_` would corrupt colons that the sanitizer mapped to `_`.
         guard base.count > 7, base.dropFirst(base.count - 7).first == "_" else { return base }
-        return String(base.dropLast(7)).replacingOccurrences(of: "_", with: " ")
+        return String(base.dropLast(7))
     }
 
     func generateVideoOverview(for node: OutlineNode, forceRegenerate: Bool = false) {
         guard !isGeneratingVideo else { return }
 
-        let existingVideo = videoPath(for: node.label)
-        if !forceRegenerate, FileManager.default.fileExists(atPath: existingVideo.path) {
+        let videoURL = videoPath(for: node.label)
+        if !forceRegenerate, FileManager.default.fileExists(atPath: videoURL.path) {
             videoChapterTitle = node.label
-            videoStatus = .done(videoPath: existingVideo)
+            videoStatus = .done(videoPath: videoURL)
             return
         }
-        // Remove old cached file before re-generating so the script doesn't pick it up.
-        if forceRegenerate { try? FileManager.default.removeItem(at: existingVideo) }
+        if forceRegenerate { try? FileManager.default.removeItem(at: videoURL) }
 
         guard let chapterPDF = extractChapterPDF(for: node) else { return }
         currentChapterPDF = chapterPDF
@@ -470,12 +476,10 @@ class PDFViewModel: ObservableObject {
         videoChapterTitle = node.label
         videoStatus = .uploading(message: "Preparing...")
 
-        let outputDir = videoOutputDir()
-
         videoTask = Task {
             for await status in await videoService.generateVideo(
                 pdfPath: chapterPDF,
-                outputDir: outputDir,
+                outputPath: videoURL,
                 title: node.label,
                 format: videoFormat,
                 style: videoStyle

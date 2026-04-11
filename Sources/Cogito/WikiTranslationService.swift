@@ -57,7 +57,7 @@ struct WikiTranslationService {
     private static func fetchDescription(title: String, lang: String) async throws -> String {
         let baseLang = lang.components(separatedBy: "-").first ?? lang
         let encoded  = title.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
-        let url      = URL(string: "https://\(baseLang).wikipedia.org/api/rest_v1/page/summary/\(encoded)")!
+        guard let url = URL(string: "https://\(baseLang).wikipedia.org/api/rest_v1/page/summary/\(encoded)") else { return "" }
 
         let (data, _) = try await URLSession.shared.data(from: url)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],

@@ -19,8 +19,10 @@ struct ContentView: View {
                             CornellNoteView(pageIndex: vm.currentPageIndex)
                                 .frame(width: 48)
                             PDFReaderView()
-                            CornellNoteView(pageIndex: min(vm.currentPageIndex + 1, vm.totalPages - 1))
-                                .frame(width: 48)
+                            if vm.currentPageIndex + 1 < vm.totalPages {
+                                CornellNoteView(pageIndex: vm.currentPageIndex + 1)
+                                    .frame(width: 48)
+                            }
                         }
                     } else {
                         PDFReaderView()
@@ -664,12 +666,18 @@ struct VideoOverlayView: View {
             Color.black.opacity(0.75)
                 .ignoresSafeArea()
                 .onTapGesture { onClose() }
-                .onExitCommand { onClose() }
+
+            // .onExitCommand only fires when a view has focus; a hidden button
+            // with a keyboard shortcut works unconditionally.
+            Button("", action: onClose)
+                .keyboardShortcut(.escape, modifiers: [])
+                .hidden()
 
             VStack(spacing: 12) {
                 VideoLayerView(player: model.player)
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .frame(maxWidth: 900)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
                     .onAppear { model.start() }
                     .onDisappear { model.stop() }

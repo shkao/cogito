@@ -30,13 +30,11 @@ struct SidebarView: View {
             Divider().padding(.top, 6)
 
             // Content
-            Group {
-                switch vm.sidebarMode {
-                case .outline:    OutlineSidebarView()
-                case .thumbnails: ThumbnailSidebarView()
-                case .bookmarks:  BookmarkSidebarView()
-                case .videos:     VideoLibrarySidebarView()
-                }
+            switch vm.sidebarMode {
+            case .outline:    OutlineSidebarView()
+            case .thumbnails: ThumbnailSidebarView()
+            case .bookmarks:  BookmarkSidebarView()
+            case .videos:     VideoLibrarySidebarView()
             }
         }
     }
