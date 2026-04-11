@@ -6,87 +6,77 @@
 
 *Cogito, ergo sum.* I think, therefore I am.
 
-A macOS PDF reader built to help you think. Most PDF readers display pages. Cogito turns reading into active thinking through edge notes, instant word translation, AI-generated chapter videos, and on-device LLM inference.
+macOS PDF reader for active reading. Open a PDF, take edge notes beside each page, look up any word, and generate a NotebookLM video overview for any chapter. Chapter structure is detected automatically on-device with a local LLM when the PDF has no embedded outline.
 
-## What it does
+## Features
 
-**PDF reading** — opens any PDF with automatic margin cropping, single and two-page layouts, zoom, bookmarks, and full-text search. The outline sidebar supports both PDFKit-provided outlines and LLM-inferred chapter structure for PDFs with no embedded table of contents.
+PDF reading with automatic margin cropping, single and two-page layouts, zoom, bookmarks, and full-text search.
 
-**Edge notes** — narrow note panels flank the pages in two-page mode. Notes are saved per page, per document, and survive restarts.
+Edge notes in two-page mode: narrow panels beside each page, saved per-page per-document.
 
-**Word translation** — select any word to get a translation card powered by the Wikipedia summary API. Eight target languages, persistent preference.
+Word translation: select any word and get a Wikipedia-powered card in one of eight languages.
 
-**Video overviews** — hover any chapter in the outline and click the video icon. Cogito extracts that chapter as a PDF, uploads it to Google NotebookLM via a Python bridge, and generates an Explainer or Deep Dive video with Whiteboard or Slideshow style. A production brief instructs the generator to favor animation over static slides and to cover every concept in the chapter. The finished video plays in a full-window overlay with caption support.
+Chapter video overviews: click the video icon on any chapter in the outline sidebar. Cogito extracts that chapter, uploads it to Google NotebookLM with an animation brief, and streams generation progress. The finished MP4 plays in a full-window overlay with captions.
 
-**Local LLM inference** — Gemma 3n E4B runs on-device via mlx-swift for chapter outline detection and any future on-device tasks. No cloud call, no GPU required beyond the Apple Silicon Neural Engine.
+On-device LLM: Gemma 3n E4B via mlx-swift detects chapter structure from TOC pages when the PDF has no outline. Runs on the Apple Silicon Neural Engine, no internet required.
 
 ## Architecture
 
 ```mermaid
-%%{init:{'theme':'base','themeVariables':{'primaryColor':'#6366f1','primaryTextColor':'#1e1b4b','lineColor':'#a5b4fc','fontSize':'13px'}}}%%
-graph LR
+%%{init:{'theme':'base','themeVariables':{'primaryColor':'#6366f1','primaryTextColor':'#1e1b4b','lineColor':'#94a3b8','fontSize':'13px'}}}%%
+graph TD
     User(("User"))
 
     subgraph App[" Cogito.app "]
         direction TB
 
-        subgraph UI[" SwiftUI UI Layer "]
+        subgraph Views[" SwiftUI Views "]
             direction LR
             CV["ContentView"]
             SB["SidebarView"]
             PR["PDFReaderView"]
-            TC["TranslationCardView"]
-            VB["VideoGenerationBannerView"]
-            VO["VideoOverlayView\n(AVFoundation)"]
         end
 
-        VM[["PDFViewModel\n@MainActor ObservableObject\n\nstate · navigation · bookmarks\noutline · search · notes"]]
+        VM[["PDFViewModel\nnav · bookmarks · outline\nsearch · notes · video state"]]
 
-        subgraph Services[" Services "]
-            direction TB
-            LLM["LLMService\nGemma 3n E4B\nmlx-swift · on-device"]
-            WTS["WikiTranslationService\nURLSession"]
-            NLM["NotebookLMService\nProcess actor\n(shells out to Python)"]
+        PDFKit[["PDFKit"]]
+
+        subgraph Svc[" Services "]
+            direction LR
+            LLM["LLMService\nGemma 3n E4B\non-device"]
+            WTS["WikiTranslationService"]
+            NLM["NotebookLMService\nProcess actor"]
         end
-
-        PDFKit[["PDFKit\nsystem framework"]]
     end
 
-    subgraph Bridge[" Python bridge "]
-        PY["generate_video.py\nnotebooklm-py 0.3.x"]
+    subgraph Ext[" External "]
+        direction LR
+        PY["generate_video.py\nnotebooklm-py"]
+        Wiki[("Wikipedia API")]
+        NLMAPI[("Google NotebookLM")]
     end
 
-    subgraph Cloud[" Cloud "]
-        Wiki[("Wikipedia\nREST API")]
-        NLMAPI[("Google\nNotebookLM")]
-    end
-
-    User -- "open / navigate\nbookmark / search" --> CV
-    CV & SB & PR --> VM
+    User --> Views
+    Views --> VM
     VM --> PDFKit
 
-    VM -- "infer outline\nfrom TOC pages" --> LLM
-    VM -- "selected word" --> WTS
-    VM -- "chapter PDF +\noutput path" --> NLM
-
-    WTS -- "GET summary" --> Wiki
-    Wiki -- "definition" --> WTS
-    WTS -- "translation" --> TC
-
-    NLM -- "spawn process" --> PY
-    PY -- "upload + generate" --> NLMAPI
-    NLMAPI -- "MP4 download" --> PY
-    PY -- "JSON status lines" --> NLM
-    NLM -- "AsyncStream<VideoStatus>" --> VB
-    NLM -- "done(videoPath:)" --> VO
-
+    VM -- "TOC pages" --> LLM
     LLM -- "OutlineNode[]" --> VM
 
+    VM -- "selected word" --> WTS
+    WTS --> Wiki
+    Wiki --> WTS
+
+    VM -- "chapter PDF" --> NLM
+    NLM -- "spawn" --> PY
+    PY --> NLMAPI
+    NLMAPI -- "MP4" --> PY
+    PY -- "JSON status" --> NLM
+
     style App fill:#fafafe,stroke:#6366f1,stroke-width:2px,color:#4338ca
-    style UI fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af
-    style Services fill:#fdf2f8,stroke:#ec4899,stroke-width:1.5px,color:#9d174d
-    style Bridge fill:#fffbeb,stroke:#d97706,stroke-width:1.5px,color:#92400e
-    style Cloud fill:#f0fdf4,stroke:#4ade80,stroke-width:1.5px,color:#14532d
+    style Views fill:#eff6ff,stroke:#3b82f6,stroke-width:1.5px,color:#1e40af
+    style Svc fill:#fdf2f8,stroke:#ec4899,stroke-width:1.5px,color:#9d174d
+    style Ext fill:#f0fdf4,stroke:#4ade80,stroke-width:1.5px,color:#14532d
     style VM fill:#eef2ff,stroke:#6366f1,stroke-width:2px,color:#3730a3
     style PDFKit fill:#dbeafe,stroke:#60a5fa,color:#1e3a5f
     style LLM fill:#fce7f3,stroke:#f472b6,color:#831843
@@ -97,77 +87,59 @@ graph LR
     style NLMAPI fill:#dcfce7,stroke:#4ade80,color:#14532d
 ```
 
-**Data flows:**
-
-| Action | Path |
-|--------|------|
-| Open PDF | `PDFViewModel` → `PDFKit` → renders in `PDFReaderView` |
-| Infer outline (no TOC) | `PDFViewModel` → `LLMService` (Gemma, on-device) → `OutlineNode[]` |
-| Select word | `PDFReaderView` → `PDFViewModel` → `WikiTranslationService` → Wikipedia API → `TranslationCardView` |
-| Generate video | `PDFViewModel` → `NotebookLMService` → `generate_video.py` → NotebookLM → MP4 on disk → `VideoOverlayView` |
+All views share one `PDFViewModel`. Services are injected as actors and communicate back via `AsyncStream` or `@Published` properties. The video path is the only one that crosses a process boundary: `NotebookLMService` spawns `generate_video.py` and reads JSON lines from stdout.
 
 ## Project structure
 
 ```
 cogito/
 ├── Sources/Cogito/
-│   ├── CogitoApp.swift              # App entry, menu commands
-│   ├── ContentView.swift            # Root layout, toolbar, video overlay
-│   ├── PDFViewModel.swift           # Central state (navigation, bookmarks,
-│   │                                #   outline, notes, translation, video)
-│   ├── PDFReaderView.swift          # PDFKit NSView bridge, selection handling
-│   ├── SidebarView.swift            # Outline / thumbnails / bookmarks / videos
-│   ├── CornellNoteView.swift        # Per-page edge note editor
-│   ├── TranslationCardView.swift    # Floating word translation card
-│   ├── VideoGenerationBannerView.swift  # Status banner (uploading/polling/done)
-│   ├── NotebookLMService.swift      # Process actor: spawns Python, streams status
-│   ├── LLMService.swift             # mlx-swift wrapper for Gemma 3n E4B
-│   ├── WikiTranslationService.swift # Wikipedia summary API client
-│   └── ...                          # Supporting views and utilities
+│   ├── CogitoApp.swift                  # entry point, menu commands
+│   ├── ContentView.swift                # root layout, toolbar, video overlay
+│   ├── PDFViewModel.swift               # all app state
+│   ├── PDFReaderView.swift              # PDFKit bridge, word selection
+│   ├── SidebarView.swift                # outline / thumbnails / bookmarks / videos
+│   ├── CornellNoteView.swift            # edge note editor
+│   ├── TranslationCardView.swift        # word translation card
+│   ├── VideoGenerationBannerView.swift  # generation status banner
+│   ├── NotebookLMService.swift          # process actor, status streaming
+│   ├── LLMService.swift                 # mlx-swift / Gemma wrapper
+│   └── WikiTranslationService.swift     # Wikipedia API client
 │
 ├── Scripts/
-│   └── generate_video.py            # Python bridge: PDFKit → NotebookLM → MP4
+│   └── generate_video.py    # uploads chapter PDF, polls NotebookLM, saves MP4
 │
-├── Package.swift                    # SPM: mlx-swift dependency
-├── Makefile                         # build / bundle / run targets
-└── FEATURES.md                      # Roadmap and design notes
+├── Package.swift            # mlx-swift via SPM
+└── Makefile                 # build / bundle / run
 ```
 
 ## Requirements
 
-| Dependency | Version | Role |
-|------------|---------|------|
-| macOS | ≥ 14 | SwiftUI, PDFKit, AVFoundation |
-| Swift | ≥ 6 | Language and SPM |
-| Python 3 | any recent | Video generation bridge |
-| [notebooklm-py](https://github.com/inconsistentpassion/notebooklm-py) | ≥ 0.3 | NotebookLM API client |
-| [mlx-swift](https://github.com/ml-explore/mlx-swift) | ≥ 0.21 | On-device LLM inference |
+| | Version | |
+|--|---------|--|
+| macOS | 14+ | SwiftUI, PDFKit, AVFoundation |
+| Swift | 6+ | |
+| Python 3 | any | video bridge |
+| [notebooklm-py](https://github.com/inconsistentpassion/notebooklm-py) | 0.3+ | NotebookLM client |
+| [mlx-swift](https://github.com/ml-explore/mlx-swift) | 0.21+ | on-device inference |
 
 ## Building
 
 ```bash
-# Install Python dependency
 pip install notebooklm-py
+notebooklm login          # one-time, browser-based Google auth
 
-# Authenticate with NotebookLM (one-time, browser-based)
-notebooklm login
-
-# Build and run (dev build, no bundle)
-make build && make run
-
-# Full app bundle (copies mlx.metallib and generate_video.py into .app)
-make bundle && open Cogito.app
+make build && make run    # dev build
+make bundle               # full .app with mlx.metallib and generate_video.py
 ```
-
-The `mlx.metallib` GPU shader library is copied automatically from the Python MLX installation. If Python MLX is not installed (`pip install mlx`), on-device LLM inference will fall back to CPU.
 
 ## Video generation
 
-Video generation uses Google NotebookLM, which requires a Google account. Authentication is browser-based and persists in a local cookie store managed by `notebooklm-py`.
+Requires a Google account. Auth persists in a local cookie store via `notebooklm-py`.
 
-The Python bridge (`Scripts/generate_video.py`) receives a chapter PDF and the full expected output path from the Swift side, uploads both the PDF and a production brief to a new NotebookLM notebook, triggers video generation, and polls until the MP4 is ready. Progress is emitted as JSON lines on stdout and parsed by `NotebookLMService` into a typed `AsyncStream<VideoStatus>`.
+`generate_video.py` receives a chapter PDF and the target output path from Swift, uploads the PDF plus an animation brief to a new NotebookLM notebook, and polls until the MP4 is ready. Status comes back as JSON lines on stdout; `NotebookLMService` parses them into `AsyncStream<VideoStatus>`.
 
-Videos are cached in `~/Library/Caches/com.cogito.app/Videos/` with a stable per-book hash suffix to prevent cross-book collisions.
+Videos cache to `~/Library/Caches/com.cogito.app/Videos/` with a per-book hash in the filename.
 
 ## License
 
