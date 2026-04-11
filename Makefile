@@ -2,27 +2,30 @@ APP     = Cogito.app
 BINARY  = .build/arm64-apple-macosx/debug/Cogito
 MACOS   = $(APP)/Contents/MacOS
 PLIST   = $(APP)/Contents/Info.plist
-# Python MLX ships a pre-compiled metallib compatible with mlx-swift 0.31.x.
-# SPM does not compile .metal shaders, so we copy it here.
-MLX_METALLIB = $(shell python3 -c "import mlx.core as mx, os; print(os.path.dirname(mx.__spec__.origin))" 2>/dev/null)/lib/mlx.metallib
 
-.PHONY: build bundle run clean
+.PHONY: deps build bundle run clean
+
+deps:
+	@python3 -c "import notebooklm, mlx" 2>/dev/null || \
+		(echo "Installing Python dependencies..."; python3 -m pip install notebooklm-py mlx || exit 1)
 
 build:
 	swift build
 
-bundle: build
-	@python3 -c "import notebooklm" 2>/dev/null || (echo "Installing notebooklm-py..."; pip3 install --quiet notebooklm-py)
+# Python MLX ships a pre-compiled metallib compatible with mlx-swift 0.31.x.
+# SPM does not compile .metal shaders, so we copy it here.
+bundle: deps build
 	mkdir -p $(MACOS)
 	mkdir -p $(APP)/Contents/Resources/Scripts
 	/bin/cp $(BINARY) $(MACOS)/Cogito
 	/bin/cp Scripts/generate_video.py $(APP)/Contents/Resources/Scripts/
-	@if [ -f "$(MLX_METALLIB)" ]; then \
-		/bin/cp $(MLX_METALLIB) $(MACOS)/mlx.metallib; \
+	@MLX_METALLIB=$$(python3 -c "import mlx.core as mx, os; print(os.path.dirname(mx.__spec__.origin))")/lib/mlx.metallib; \
+	if [ -f "$$MLX_METALLIB" ]; then \
+		/bin/cp "$$MLX_METALLIB" $(MACOS)/mlx.metallib; \
 		echo "Copied mlx.metallib from Python MLX."; \
 	else \
-		echo "Warning: mlx.metallib not found. GPU inference will fail."; \
-		echo "Install with: pip3 install mlx"; \
+		echo "Error: mlx.metallib not found after installation."; \
+		exit 1; \
 	fi
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
