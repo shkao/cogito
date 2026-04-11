@@ -2,6 +2,9 @@ APP     = Cogito.app
 BINARY  = .build/arm64-apple-macosx/debug/Cogito
 MACOS   = $(APP)/Contents/MacOS
 PLIST   = $(APP)/Contents/Info.plist
+# Python MLX ships a pre-compiled metallib compatible with mlx-swift 0.31.x.
+# SPM does not compile .metal shaders, so we copy it here.
+MLX_METALLIB = $(shell python3 -c "import mlx.core as mx, os; print(os.path.dirname(mx.__spec__.origin))" 2>/dev/null)/lib/mlx.metallib
 
 .PHONY: build bundle run clean
 
@@ -11,6 +14,13 @@ build:
 bundle: build
 	mkdir -p $(MACOS)
 	/bin/cp $(BINARY) $(MACOS)/Cogito
+	@if [ -f "$(MLX_METALLIB)" ]; then \
+		/bin/cp $(MLX_METALLIB) $(MACOS)/mlx.metallib; \
+		echo "Copied mlx.metallib from Python MLX."; \
+	else \
+		echo "Warning: mlx.metallib not found. GPU inference will fail."; \
+		echo "Install with: pip3 install mlx"; \
+	fi
 	@printf '<?xml version="1.0" encoding="UTF-8"?>\n\
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
 <plist version="1.0"><dict>\n\
