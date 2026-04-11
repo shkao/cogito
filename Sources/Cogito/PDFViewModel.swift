@@ -118,10 +118,10 @@ class PDFViewModel: ObservableObject {
     @Published var cornellNotes: [Int: String] = [:]
 
     // MARK: Translation
-    @Published var selectedWord: String? = nil
-    @Published var wordTranslation: WikiTranslation? = nil
+    @Published var selectedWord: String?
+    @Published var wordTranslation: WikiTranslation?
     @Published var isLoadingTranslation = false
-    @Published var translationError: String? = nil
+    @Published var translationError: String?
     @Published var selectionYFraction: CGFloat? = nil
     @Published var selectionOnLeftPage: Bool = false
     @Published var translationLang: String = UserDefaults.standard.string(forKey: "translationLang") ?? "zh" {

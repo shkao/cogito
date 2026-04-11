@@ -56,8 +56,12 @@ let task = Task {
         print("\n")
 
         if let i = info {
-            print("  Prompt : \(i.promptTokenCount) tokens  |  \(String(format: "%.1f", i.promptTokensPerSecond)) tok/s  |  \(String(format: "%.2f", i.promptTime))s")
-            print("  Generate: \(i.generationTokenCount) tokens  |  \(String(format: "%.1f", i.tokensPerSecond)) tok/s  |  \(String(format: "%.2f", i.generateTime))s")
+            let promptTPS = String(format: "%.1f", i.promptTokensPerSecond)
+            let promptT = String(format: "%.2f", i.promptTime)
+            print("  Prompt : \(i.promptTokenCount) tokens  |  \(promptTPS) tok/s  |  \(promptT)s")
+            let genTPS = String(format: "%.1f", i.tokensPerSecond)
+            let genT = String(format: "%.2f", i.generateTime)
+            print("  Generate: \(i.generationTokenCount) tokens  |  \(genTPS) tok/s  |  \(genT)s")
             print("  Stop: \(i.stopReason)\n")
         }
     }

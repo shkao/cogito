@@ -29,12 +29,12 @@ struct WikiTranslationService {
     private static func fetchTargetTitle(word: String, targetLang: String) async throws -> String {
         var comps = URLComponents(string: "https://en.wikipedia.org/w/api.php")!
         comps.queryItems = [
-            URLQueryItem(name: "action",    value: "query"),
+            URLQueryItem(name: "action", value: "query"),
             URLQueryItem(name: "redirects", value: "1"),
-            URLQueryItem(name: "prop",      value: "langlinks"),
-            URLQueryItem(name: "titles",    value: word),
-            URLQueryItem(name: "lllang",    value: targetLang),
-            URLQueryItem(name: "format",    value: "json"),
+            URLQueryItem(name: "prop", value: "langlinks"),
+            URLQueryItem(name: "titles", value: word),
+            URLQueryItem(name: "lllang", value: targetLang),
+            URLQueryItem(name: "format", value: "json"),
         ]
         guard let url = comps.url else { throw WikiTranslationError.noArticleFound }
 
