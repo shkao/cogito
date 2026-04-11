@@ -122,8 +122,12 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
         from notebooklm.exceptions import ArtifactNotReadyError
         from notebooklm.types import VideoFormat, VideoStyle
     except ImportError:
-        emit({"status": STATUS_ERROR, "message": "notebooklm-py not installed. Run: pip install notebooklm-py"})
-        sys.exit(1)
+        import subprocess
+        emit({"status": STATUS_UPLOADING, "message": "Installing notebooklm-py..."})
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "notebooklm-py"])
+        from notebooklm import NotebookLMClient
+        from notebooklm.exceptions import ArtifactNotReadyError
+        from notebooklm.types import VideoFormat, VideoStyle
 
     pdf = Path(pdf_path)
     if not pdf.exists():
