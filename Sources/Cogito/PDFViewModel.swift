@@ -122,7 +122,7 @@ class PDFViewModel: ObservableObject {
     @Published var wordTranslation: WikiTranslation?
     @Published var isLoadingTranslation = false
     @Published var translationError: String?
-    @Published var selectionYFraction: CGFloat? = nil
+    @Published var selectionYFraction: CGFloat?
     @Published var selectionOnLeftPage: Bool = false
     @Published var translationLang: String = UserDefaults.standard.string(forKey: "translationLang") ?? "zh" {
         didSet { UserDefaults.standard.set(translationLang, forKey: "translationLang") }
@@ -139,7 +139,7 @@ class PDFViewModel: ObservableObject {
 
     @Published var videoJobs: [VideoJob] = []
     @Published var isInferringOutline: Bool = false
-    @Published var playingVideoURL: URL? = nil
+    @Published var playingVideoURL: URL?
 
     @Published var videoFormat: VideoFormat = VideoFormat(rawValue: UserDefaults.standard.string(forKey: "videoFormat") ?? "") ?? .explainer {
         didSet { UserDefaults.standard.set(videoFormat.rawValue, forKey: "videoFormat") }

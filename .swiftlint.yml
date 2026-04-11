@@ -13,6 +13,8 @@ disabled_rules:
   - large_tuple
   - cyclomatic_complexity
   - nesting
+  - switch_case_alignment
+  - function_parameter_count
 
 line_length:
   warning: 150

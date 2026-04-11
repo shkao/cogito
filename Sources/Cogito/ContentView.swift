@@ -561,7 +561,7 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
     @Published var isPlaying = true
     @Published var progress: Double = 0
     @Published var duration: Double = 1
-    @Published var currentCaption: String? = nil
+    @Published var currentCaption: String?
     @Published var captionsEnabled = true
 
     private var timeObserver: Any?
@@ -604,7 +604,7 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
     }
 
     func togglePlay() {
-        isPlaying ? player.pause() : player.play()
+        if isPlaying { player.pause() } else { player.play() }
         isPlaying.toggle()
     }
 
@@ -675,6 +675,7 @@ struct VideoOverlayView: View {
     }
 
     var body: some View {
+        GeometryReader { geo in
         ZStack {
             Color.black.opacity(0.75)
                 .ignoresSafeArea()
@@ -689,7 +690,7 @@ struct VideoOverlayView: View {
             VStack(spacing: 12) {
                 VideoLayerView(player: model.player)
                     .aspectRatio(16 / 9, contentMode: .fit)
-                    .frame(maxWidth: 900)
+                    .frame(maxHeight: geo.size.height * 0.75)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
                     .onAppear { model.start() }
@@ -755,6 +756,7 @@ struct VideoOverlayView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(true)
+        }
         }
     }
 }
