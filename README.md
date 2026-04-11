@@ -6,13 +6,13 @@
 
 *Cogito, ergo sum.* I think, therefore I am.
 
-A macOS PDF reader built to help you think. Most PDF readers display pages. Cogito turns reading into active thinking through margin notes, instant word translation, AI-generated chapter videos, and on-device LLM inference.
+A macOS PDF reader built to help you think. Most PDF readers display pages. Cogito turns reading into active thinking through edge notes, instant word translation, AI-generated chapter videos, and on-device LLM inference.
 
 ## What it does
 
 **PDF reading** — opens any PDF with automatic margin cropping, single and two-page layouts, zoom, bookmarks, and full-text search. The outline sidebar supports both PDFKit-provided outlines and LLM-inferred chapter structure for PDFs with no embedded table of contents.
 
-**Cornell notes** — narrow note panels flank the pages in two-page mode. Notes are saved per page, per document, and survive restarts.
+**Edge notes** — narrow note panels flank the pages in two-page mode. Notes are saved per page, per document, and survive restarts.
 
 **Word translation** — select any word to get a translation card powered by the Wikipedia summary API. Eight target languages, persistent preference.
 
@@ -117,7 +117,7 @@ cogito/
 │   │                                #   outline, notes, translation, video)
 │   ├── PDFReaderView.swift          # PDFKit NSView bridge, selection handling
 │   ├── SidebarView.swift            # Outline / thumbnails / bookmarks / videos
-│   ├── CornellNoteView.swift        # Per-page margin note editor
+│   ├── CornellNoteView.swift        # Per-page edge note editor
 │   ├── TranslationCardView.swift    # Floating word translation card
 │   ├── VideoGenerationBannerView.swift  # Status banner (uploading/polling/done)
 │   ├── NotebookLMService.swift      # Process actor: spawns Python, streams status
