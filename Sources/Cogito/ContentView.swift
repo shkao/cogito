@@ -6,12 +6,17 @@ struct ContentView: View {
     @EnvironmentObject var vm: PDFViewModel
     @State private var isDroppingFile = false
     @State private var showingSettings = false
+    @State private var showSidebar = true
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-        } detail: {
+        HStack(spacing: 0) {
+            if showSidebar {
+                SidebarView()
+                    .frame(width: 240)
+                    .background(.background)
+                Divider()
+            }
+
             ZStack {
                 if vm.document != nil {
                     if vm.displayMode == .twoPage {
@@ -69,6 +74,7 @@ struct ContentView: View {
                     DropZoneView(openFile: vm.openFilePicker)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.easeInOut(duration: 0.18), value: vm.isSearchBarVisible)
             .animation(.easeInOut(duration: 0.2), value: vm.videoStatus == nil)
             .onDrop(of: [UTType.pdf, UTType.fileURL], isTargeted: $isDroppingFile) { providers in
@@ -83,9 +89,9 @@ struct ContentView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .toolbar { toolbarItems }
-            .navigationTitle(vm.documentTitle)
         }
+        .toolbar { toolbarItems }
+        .navigationTitle(vm.documentTitle)
         .overlay {
             if let url = vm.playingVideoURL {
                 VideoOverlayView(url: url) { vm.playingVideoURL = nil }
@@ -99,6 +105,13 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     var toolbarItems: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button { withAnimation { showSidebar.toggle() } } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .help("Toggle Sidebar")
+        }
+
         ToolbarItemGroup(placement: .principal) {
             if vm.document != nil {
                 HStack(spacing: 2) {

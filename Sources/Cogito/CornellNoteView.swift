@@ -14,14 +14,32 @@ struct CornellNoteView: View {
     }
 
     var body: some View {
-        TextEditor(text: noteText)
-            .font(.system(size: 11))
-            .foregroundStyle(Color(white: 0.2))
-            .focused($isFocused)
-            .onChange(of: isFocused) { _, focused in vm.isEditingText = focused }
-            .scrollContentBackground(.hidden)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 4)
-            .background(Color.white)
+        let chapterNode = vm.chapterNode(at: pageIndex)
+        ZStack(alignment: .top) {
+            TextEditor(text: noteText)
+                .font(.system(size: 11))
+                .foregroundStyle(Color(white: 0.2))
+                .focused($isFocused)
+                .onChange(of: isFocused) { _, focused in vm.isEditingText = focused }
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 4)
+                .padding(.vertical, chapterNode != nil ? 42 : 4)
+                .background(Color.white)
+
+            if let node = chapterNode {
+                Button {
+                    vm.generateVideoOverview(for: node)
+                } label: {
+                    Image(systemName: "video.badge.waveform")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(Color.white)
+                }
+                .buttonStyle(.plain)
+                .help("Generate Video Overview: \(node.label)")
+            }
+        }
     }
 }

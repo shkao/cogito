@@ -90,6 +90,14 @@ WHAT TO AVOID
 """
 
 
+STATUS_UPLOADING = "uploading"
+STATUS_GENERATING = "generating"
+STATUS_POLLING = "polling"
+STATUS_DOWNLOADING = "downloading"
+STATUS_DONE = "done"
+STATUS_ERROR = "error"
+
+
 def emit(obj: dict) -> None:
     print(json.dumps(obj), flush=True)
 
@@ -114,12 +122,12 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
         from notebooklm.exceptions import ArtifactNotReadyError
         from notebooklm.types import VideoFormat, VideoStyle
     except ImportError:
-        emit({"status": "error", "message": "notebooklm-py not installed. Run: pip install notebooklm-py"})
+        emit({"status": STATUS_ERROR, "message": "notebooklm-py not installed. Run: pip install notebooklm-py"})
         sys.exit(1)
 
     pdf = Path(pdf_path)
     if not pdf.exists():
-        emit({"status": "error", "message": f"PDF not found: {pdf_path}"})
+        emit({"status": STATUS_ERROR, "message": f"PDF not found: {pdf_path}"})
         sys.exit(1)
 
     out_path = Path(output_path)
@@ -128,7 +136,7 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
     try:
         async with await NotebookLMClient.from_storage() as client:
             # Check for an existing notebook with a completed video before creating a new one.
-            emit({"status": "uploading", "message": "Checking for existing video..."})
+            emit({"status": STATUS_UPLOADING, "message": "Checking for existing video..."})
             try:
                 notebooks = await client.notebooks.list()
                 for nb in notebooks:
@@ -139,18 +147,18 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
                     if not completed:
                         continue
                     # Found a completed video — download it.
-                    emit({"status": "downloading", "message": "Downloading existing video..."})
+                    emit({"status": STATUS_DOWNLOADING, "message": "Downloading existing video..."})
                     if await try_download(client, nb.id, completed[0].id, out_path):
-                        emit({"status": "done", "path": str(out_path)})
+                        emit({"status": STATUS_DONE, "path": str(out_path)})
                         return
             except Exception:
                 pass  # If listing fails, fall through to create a new notebook.
 
-            emit({"status": "uploading", "message": f'Creating notebook "{title}"...'})
+            emit({"status": STATUS_UPLOADING, "message": f'Creating notebook "{title}"...'})
             notebook = await client.notebooks.create(title=title)
             nid = notebook.id
 
-            emit({"status": "uploading", "message": "Uploading chapter PDF..."})
+            emit({"status": STATUS_UPLOADING, "message": "Uploading chapter PDF..."})
             source = await client.sources.add_file(
                 notebook_id=nid,
                 file_path=str(pdf),
@@ -159,7 +167,7 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
 
             # Upload the animation production brief as a second source so the
             # video generator favours dynamic animations over static slides.
-            emit({"status": "uploading", "message": "Uploading animation brief..."})
+            emit({"status": STATUS_UPLOADING, "message": "Uploading animation brief..."})
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, prefix="cogito-brief-") as f:
                 f.write(ANIMATION_BRIEF)
                 brief_path = f.name
@@ -180,7 +188,7 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
             fmt_enum = VideoFormat[fmt_key] if fmt_key in VideoFormat.__members__ else VideoFormat.EXPLAINER
             style_enum = VideoStyle[style_key] if style_key in VideoStyle.__members__ else VideoStyle.WHITEBOARD
             emit({
-                "status": "generating",
+                "status": STATUS_GENERATING,
                 "message": f"Starting video generation ({fmt_enum.name.title()} + {style_enum.name.title()}, ~15 min)...",
             })
             gs = await client.artifacts.generate_video(
@@ -202,13 +210,13 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
                 mins, secs = divmod(elapsed, 60)
                 elapsed_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
 
-                emit({"status": "downloading", "message": "Checking if video is ready..."})
+                emit({"status": STATUS_DOWNLOADING, "message": "Checking if video is ready..."})
                 if await try_download(client, nid, task_id, out_path):
-                    emit({"status": "done", "path": str(out_path)})
+                    emit({"status": STATUS_DONE, "path": str(out_path)})
                     return
 
                 emit({
-                    "status": "polling",
+                    "status": STATUS_POLLING,
                     "elapsed": elapsed,
                     "message": f"Generating... ({elapsed_str} elapsed)",
                 })
@@ -218,11 +226,11 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
         auth_words = ("auth", "login", "cookie", "credential", "unauthenticated", "permission", "403", "sign in")
         if any(k in msg.lower() for k in auth_words):
             emit({
-                "status": "error",
+                "status": STATUS_ERROR,
                 "message": "NotebookLM auth required. Run 'notebooklm login' in Terminal.",
             })
         else:
-            emit({"status": "error", "message": f"Error: {msg}"})
+            emit({"status": STATUS_ERROR, "message": f"Error: {msg}"})
         sys.exit(1)
 
 

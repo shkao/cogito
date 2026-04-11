@@ -60,6 +60,7 @@ enum VideoStyle: String, CaseIterable, Identifiable {
 
 actor NotebookLMService {
     private var activeProcess: Process?
+    private static let authKeywords = ["auth", "login", "cookie", "credential", "unauthenticated", "permission", "403", "sign in"]
 
     func generateVideo(
         pdfPath: URL,
@@ -166,8 +167,8 @@ actor NotebookLMService {
             return .done(videoPath: URL(fileURLWithPath: path))
         case "error":
             let msg = json["message"] as? String ?? "Unknown error"
-            let authWords = ["auth", "login", "cookie", "credential", "unauthenticated", "permission", "403", "sign in"]
-            if authWords.contains(where: { msg.lowercased().contains($0) }) {
+            let lower = msg.lowercased()
+            if Self.authKeywords.contains(where: { lower.contains($0) }) {
                 return .authRequired
             }
             return .error(msg)

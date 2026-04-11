@@ -137,6 +137,16 @@ private struct VideoLibraryRow: View {
             Spacer()
 
             Button {
+                vm.deleteCachedVideo(at: url)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Delete")
+
+            Button {
                 vm.playingVideoURL = url
             } label: {
                 Image(systemName: "play.circle")
@@ -145,11 +155,6 @@ private struct VideoLibraryRow: View {
             }
             .buttonStyle(.plain)
             .help("Watch")
-        }
-        .contextMenu {
-            Button("Watch") { vm.playingVideoURL = url }
-            Divider()
-            Button("Delete", role: .destructive) { vm.deleteCachedVideo(at: url) }
         }
     }
 }
@@ -172,17 +177,16 @@ struct OutlineRowView: View {
                     .foregroundColor(vm.currentPageIndex == node.pageIndex ? .accentColor : .primary)
                     .lineLimit(2)
                 Spacer()
-                if isEligibleForVideo, isHovered {
+                if isEligibleForVideo {
                     Button {
                         vm.generateVideoOverview(for: node)
                     } label: {
                         Image(systemName: "video.badge.waveform")
                             .font(.system(size: 10))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.5))
                     }
                     .buttonStyle(.plain)
                     .help("Generate Video Overview for \"\(node.label)\"")
-                    .transition(.opacity)
                 }
                 Text(node.pageLabel)
                     .font(.caption2)

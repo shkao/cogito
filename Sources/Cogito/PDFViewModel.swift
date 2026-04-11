@@ -130,7 +130,7 @@ class PDFViewModel: ObservableObject {
 
     // MARK: Video Generation
     @Published var videoStatus: VideoStatus? = nil
-    @Published var isGeneratingVideo: Bool = false
+    var isGeneratingVideo: Bool { videoStatus.map { !$0.isTerminal } ?? false }
     @Published var videoChapterTitle: String? = nil
     @Published var isInferringOutline: Bool = false
     @Published var playingVideoURL: URL? = nil
@@ -319,7 +319,14 @@ class PDFViewModel: ObservableObject {
     func zoomIn() { pdfView?.zoomIn(nil) }
     func zoomOut() { pdfView?.zoomOut(nil) }
     func zoomToFit() {
-        guard let v = pdfView, let page = v.currentPage else { return }
+        guard let v = pdfView else { return }
+        guard v.bounds.width > 0, v.bounds.height > 0 else { return }
+        // currentPage can be nil when PDFKit hasn't finished loading yet.
+        // Use a content page (index 2+) as the fallback: pages 0-1 skip cropBox adjustment
+        // and may have different proportions than body pages.
+        let fallback = v.document.flatMap { d in d.page(at: min(2, max(0, d.pageCount - 1))) }
+        let page = v.currentPage ?? fallback
+        guard let page else { return }
         let pageBounds = page.bounds(for: .cropBox)
         let totalWidth = displayMode.isTwoPage ? pageBounds.width * 2 : pageBounds.width
         guard totalWidth > 0, pageBounds.height > 0 else { return }
@@ -394,6 +401,11 @@ class PDFViewModel: ObservableObject {
     var canGoForward: Bool { currentPageIndex < totalPages - 1 }
 
     // MARK: Chapter page range
+
+    /// Returns the top-level outline node whose start page matches `pageIndex`, if any.
+    func chapterNode(at pageIndex: Int) -> OutlineNode? {
+        outlineNodes.first { $0.pageIndex == pageIndex && chapterPageRange(for: $0).count >= 5 }
+    }
 
     func chapterPageRange(for node: OutlineNode) -> Range<Int> {
         guard let idx = outlineNodes.firstIndex(where: { $0.id == node.id }) else {
@@ -472,7 +484,6 @@ class PDFViewModel: ObservableObject {
 
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
-        isGeneratingVideo = true
         videoChapterTitle = node.label
         videoStatus = .uploading(message: "Preparing...")
 
@@ -486,7 +497,6 @@ class PDFViewModel: ObservableObject {
             ) {
                 videoStatus = status
                 if status.isTerminal {
-                    isGeneratingVideo = false
                     try? FileManager.default.removeItem(at: chapterPDF)
                     currentChapterPDF = nil
                     refreshCachedVideos()
@@ -502,7 +512,7 @@ class PDFViewModel: ObservableObject {
         videoTask?.cancel()
         videoTask = nil
         Task { await videoService.cancel() }
-        isGeneratingVideo = false
+        videoStatus = nil
         if let pdf = currentChapterPDF {
             try? FileManager.default.removeItem(at: pdf)
             currentChapterPDF = nil
@@ -677,7 +687,7 @@ class PDFViewModel: ObservableObject {
     }
 
     private func titleAppearsNearPage(title: String, pageIndex: Int, doc: PDFDocument) -> Bool {
-        let normalized = normalize(title)
+        let normalized = normalizeTOCText(title)
         // Use first meaningful word (skip short words like "the", "a", "of")
         let words = normalized.split(separator: " ").map(String.init)
         guard let keyWord = words.first(where: { $0.count >= 4 }) ?? words.first else { return false }
@@ -688,7 +698,7 @@ class PDFViewModel: ObservableObject {
             guard i >= 0 && i < doc.pageCount,
                   let page = doc.page(at: i),
                   let text = PDFTextExtractor.text(from: page) else { continue }
-            let pageNorm = normalize(text)
+            let pageNorm = normalizeTOCText(text)
             // Check within first ~600 chars (heading area)
             let searchArea = String(pageNorm.prefix(600))
             if searchArea.contains(keyWord) { return true }
@@ -696,7 +706,8 @@ class PDFViewModel: ObservableObject {
         return false
     }
 
-    private func normalize(_ s: String) -> String {
+    /// Strips text to lowercase alphanumeric tokens for fuzzy chapter-title matching.
+    private func normalizeTOCText(_ s: String) -> String {
         s.lowercased()
             .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
             .components(separatedBy: .whitespaces)
