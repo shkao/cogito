@@ -42,7 +42,7 @@ struct ContentView: View {
                         }
                     }
 
-                    if vm.videoStatus != nil {
+                    if !vm.videoJobs.isEmpty {
                         VStack {
                             Spacer()
                             VideoGenerationBannerView()
@@ -76,7 +76,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.easeInOut(duration: 0.18), value: vm.isSearchBarVisible)
-            .animation(.easeInOut(duration: 0.2), value: vm.videoStatus == nil)
+            .animation(.easeInOut(duration: 0.2), value: vm.videoJobs.isEmpty)
             .onDrop(of: [UTType.pdf, UTType.fileURL], isTargeted: $isDroppingFile) { providers in
                 loadDroppedPDF(from: providers)
             }

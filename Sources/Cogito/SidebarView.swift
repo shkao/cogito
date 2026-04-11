@@ -167,6 +167,10 @@ struct OutlineRowView: View {
         vm.chapterPageRange(for: node).count >= 5
     }
 
+    private var hasExistingVideo: Bool {
+        vm.hasVideo(for: node.label)
+    }
+
     var body: some View {
         Button {
             vm.goToPage(node.pageIndex)
@@ -181,16 +185,13 @@ struct OutlineRowView: View {
                     Button {
                         vm.generateVideoOverview(for: node)
                     } label: {
-                        Image(systemName: "video.badge.waveform")
+                        Image(systemName: hasExistingVideo ? "video.badge.checkmark" : "video.badge.waveform")
                             .font(.system(size: 10))
-                            .foregroundStyle(isHovered ? Color.accentColor : Color.secondary.opacity(0.5))
+                            .foregroundStyle(hasExistingVideo ? Color.green : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
                     }
                     .buttonStyle(.plain)
-                    .help("Generate Video Overview for \"\(node.label)\"")
+                    .help(hasExistingVideo ? "Video ready: \"\(node.label)\"" : "Generate Video Overview for \"\(node.label)\"")
                 }
-                Text(node.pageLabel)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
             }
         }
         .buttonStyle(.plain)

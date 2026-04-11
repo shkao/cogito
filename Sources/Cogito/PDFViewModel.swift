@@ -129,9 +129,15 @@ class PDFViewModel: ObservableObject {
     }
 
     // MARK: Video Generation
-    @Published var videoStatus: VideoStatus? = nil
-    var isGeneratingVideo: Bool { videoStatus.map { !$0.isTerminal } ?? false }
-    @Published var videoChapterTitle: String? = nil
+
+    struct VideoJob: Identifiable {
+        let id: String  // chapter title
+        var status: VideoStatus
+        var task: Task<Void, Never>?
+        var chapterPDF: URL?
+    }
+
+    @Published var videoJobs: [VideoJob] = []
     @Published var isInferringOutline: Bool = false
     @Published var playingVideoURL: URL? = nil
 
@@ -143,9 +149,11 @@ class PDFViewModel: ObservableObject {
     }
 
     private let videoService = NotebookLMService()
-    private var videoTask: Task<Void, Never>?
-    private var currentChapterPDF: URL?
     private var outlineInferenceTask: Task<Void, Never>?
+
+    func isGeneratingVideo(for title: String) -> Bool {
+        videoJobs.first { $0.id == title }.map { !$0.status.isTerminal } ?? false
+    }
 
     var suppressSelectionLookup = false
     private var lookupTask: Task<Void, Never>?
@@ -460,6 +468,10 @@ class PDFViewModel: ObservableObject {
         return videoOutputDir().appendingPathComponent("\(safe)_\(bookHash).mp4")
     }
 
+    func hasVideo(for title: String) -> Bool {
+        cachedVideos.contains { videoTitle(from: $0) == title }
+    }
+
     func videoTitle(from url: URL) -> String {
         let base = url.deletingPathExtension().lastPathComponent
         // No underscore substitution: the name preserves spaces already, and
@@ -469,59 +481,68 @@ class PDFViewModel: ObservableObject {
     }
 
     func generateVideoOverview(for node: OutlineNode, forceRegenerate: Bool = false) {
-        guard !isGeneratingVideo else { return }
+        if isGeneratingVideo(for: node.label) { return }
 
         let videoURL = videoPath(for: node.label)
         if !forceRegenerate, FileManager.default.fileExists(atPath: videoURL.path) {
-            videoChapterTitle = node.label
-            videoStatus = .done(videoPath: videoURL)
+            upsertJob(id: node.label, status: .done(videoPath: videoURL))
             return
         }
         if forceRegenerate { try? FileManager.default.removeItem(at: videoURL) }
 
         guard let chapterPDF = extractChapterPDF(for: node) else { return }
-        currentChapterPDF = chapterPDF
 
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
-        videoChapterTitle = node.label
-        videoStatus = .uploading(message: "Preparing...")
+        let title = node.label
+        upsertJob(id: title, status: .uploading(message: "Preparing..."), chapterPDF: chapterPDF)
 
-        videoTask = Task {
+        let task = Task {
             for await status in await videoService.generateVideo(
                 pdfPath: chapterPDF,
                 outputPath: videoURL,
-                title: node.label,
+                title: title,
                 format: videoFormat,
                 style: videoStyle
             ) {
-                videoStatus = status
+                upsertJob(id: title, status: status)
                 if status.isTerminal {
                     try? FileManager.default.removeItem(at: chapterPDF)
-                    currentChapterPDF = nil
+                    upsertJob(id: title, status: status) { $0.chapterPDF = nil; $0.task = nil }
                     refreshCachedVideos()
                     if status.isDone {
-                        self.sendCompletionNotification(for: node.label)
+                        self.sendCompletionNotification(for: title)
                     }
                 }
             }
         }
+        upsertJob(id: title, status: .uploading(message: "Preparing...")) { $0.task = task }
     }
 
-    func cancelVideoGeneration() {
-        videoTask?.cancel()
-        videoTask = nil
-        Task { await videoService.cancel() }
-        videoStatus = nil
-        if let pdf = currentChapterPDF {
+    func cancelVideoGeneration(for title: String) {
+        guard let job = videoJobs.first(where: { $0.id == title }) else { return }
+        job.task?.cancel()
+        Task { await videoService.cancel(title: title) }
+        if let pdf = job.chapterPDF {
             try? FileManager.default.removeItem(at: pdf)
-            currentChapterPDF = nil
         }
+        videoJobs.removeAll { $0.id == title }
     }
 
-    func dismissVideo() {
-        videoStatus = nil
-        videoChapterTitle = nil
+    func dismissJob(id: String) {
+        videoJobs.removeAll { $0.id == id }
+    }
+
+    private func upsertJob(id: String, status: VideoStatus, chapterPDF: URL? = nil, _ update: ((inout VideoJob) -> Void)? = nil) {
+        if let idx = videoJobs.firstIndex(where: { $0.id == id }) {
+            videoJobs[idx].status = status
+            if let pdf = chapterPDF { videoJobs[idx].chapterPDF = pdf }
+            update?(&videoJobs[idx])
+        } else {
+            var job = VideoJob(id: id, status: status, chapterPDF: chapterPDF)
+            update?(&job)
+            videoJobs.append(job)
+        }
     }
 
     @Published private(set) var cachedVideos: [URL] = []
@@ -557,8 +578,7 @@ class PDFViewModel: ObservableObject {
     // MARK: NotebookLM auth
 
     var notebooklmAuthError: Bool {
-        if case .authRequired = videoStatus { return true }
-        return false
+        videoJobs.contains { $0.status.isAuthRequired }
     }
 
     func loginToNotebookLM() {

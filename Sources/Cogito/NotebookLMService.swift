@@ -59,7 +59,7 @@ enum VideoStyle: String, CaseIterable, Identifiable {
 // MARK: - NotebookLMService
 
 actor NotebookLMService {
-    private var activeProcess: Process?
+    private var activeProcesses: [String: Process] = [:]
     private static let authKeywords = ["auth", "login", "cookie", "credential", "unauthenticated", "permission", "403", "sign in"]
 
     func generateVideo(
@@ -74,9 +74,9 @@ actor NotebookLMService {
         return stream
     }
 
-    func cancel() {
-        activeProcess?.terminate()
-        activeProcess = nil
+    func cancel(title: String) {
+        activeProcesses[title]?.terminate()
+        activeProcesses[title] = nil
     }
 
     // MARK: - Private
@@ -110,7 +110,7 @@ actor NotebookLMService {
         proc.standardOutput = stdoutPipe
         proc.standardError = stderrPipe
 
-        activeProcess = proc
+        activeProcesses[title] = proc
 
         do {
             try proc.run()
