@@ -160,6 +160,7 @@ class PDFViewModel: ObservableObject {
 
     private let videoService = NotebookLMService()
     private var outlineInferenceTask: Task<Void, Never>?
+    private var pendingPageRestore: Int?
 
     func isGeneratingVideo(for title: String) -> Bool {
         videoJobs.first { $0.id == title }.map { !$0.status.isTerminal } ?? false
@@ -328,10 +329,15 @@ class PDFViewModel: ObservableObject {
 
     private func restoreReadingProgress() {
         let saved = UserDefaults.standard.integer(forKey: "readingProgress_\(bookHash)")
-        guard saved > 0, saved < totalPages,
-              let doc = document, let page = doc.page(at: saved) else { return }
-        currentPageIndex = saved
-        pdfView?.go(to: page)
+        if saved > 0, saved < totalPages {
+            pendingPageRestore = saved
+        }
+    }
+
+    func applyPendingRestore() {
+        guard let page = pendingPageRestore else { return }
+        pendingPageRestore = nil
+        goToPage(page)
     }
 
     private var pageStep: Int { displayMode.isTwoPage ? 2 : 1 }
@@ -495,7 +501,8 @@ class PDFViewModel: ObservableObject {
     }
 
     func hasVideo(for title: String) -> Bool {
-        FileManager.default.fileExists(atPath: videoPath(for: title).path)
+        let target = sanitizeTitle(title)
+        return cachedVideos.contains { videoTitle(from: $0) == target }
     }
 
     func videoTitle(from url: URL) -> String {
@@ -646,10 +653,10 @@ class PDFViewModel: ObservableObject {
             guard !sampledText.isEmpty else { return }
 
             let prompt = """
-            Below is text sampled from a textbook chapter titled "\(node.label)".
-            Identify 3-5 key concepts a student must understand to grasp this chapter.
-            For each, write a question that asks the student to explain it in simple terms,
-            as if talking to a 12-year-old (use analogies, metaphors, everyday examples).
+            Below is text from a chapter titled "\(node.label)".
+            Identify 3-5 key concepts a student must understand.
+            For each, write a question asking the student to \
+            explain it simply, as if to a 12-year-old.
 
             Return JSON: [{"concept": "...", "prompt": "..."}]
 
@@ -660,7 +667,7 @@ class PDFViewModel: ObservableObject {
             do {
                 let stream = await LLMService.shared.generate(
                     prompt: prompt,
-                    systemPrompt: "You identify key concepts from textbook chapters. Return ONLY a valid JSON array, no other text.",
+                    systemPrompt: "Return ONLY a valid JSON array.",
                     maxTokens: 512
                 )
                 for try await token in stream {
@@ -671,13 +678,20 @@ class PDFViewModel: ObservableObject {
                 return
             }
 
-            let cues = parseConceptCues(response: response, chapterRange: range, doc: doc)
+            let cues = parseConceptCues(
+                response: response,
+                chapterRange: range,
+                doc: doc
+            )
             guard !cues.isEmpty else { return }
 
             for cue in cues {
                 conceptCues[cue.pageIndex] = cue
             }
-            saveConceptCues(for: node.pageIndex, chapterLabel: node.label)
+            saveConceptCues(
+                for: node.pageIndex,
+                chapterLabel: node.label
+            )
         }
     }
 
@@ -700,7 +714,9 @@ class PDFViewModel: ObservableObject {
             Source material from the textbook:
             \(pageContext)
 
-            Identify 1-3 specific gaps, inaccuracies, or oversimplifications in the student's explanation. Frame each as a question that guides them back to the source material.
+            Identify 1-3 specific gaps, inaccuracies, or oversimplifications \
+            in the student's explanation. Frame each as a question that \
+            guides them back to the source material.
             Return JSON: ["question1", "question2", ...]
             """
 
@@ -708,7 +724,9 @@ class PDFViewModel: ObservableObject {
             do {
                 let stream = await LLMService.shared.generate(
                     prompt: prompt,
-                    systemPrompt: "You help students identify gaps in their understanding. Be specific. Frame observations as questions. Never give the answer directly.",
+                    systemPrompt: "You help students identify gaps in their understanding. "
+                        + "Be specific. Frame observations as questions. "
+                        + "Never give the answer directly.",
                     maxTokens: 384
                 )
                 for try await token in stream {
@@ -748,7 +766,9 @@ class PDFViewModel: ObservableObject {
             do {
                 let stream = await LLMService.shared.generate(
                     prompt: prompt,
-                    systemPrompt: "Explain concepts simply, as if talking to a curious 12-year-old. Use one strong metaphor or analogy. Under 80 words.",
+                    systemPrompt: "Explain concepts simply, as if talking to a curious "
+                        + "12-year-old. Use one strong metaphor or analogy. "
+                        + "Under 80 words.",
                     maxTokens: 256
                 )
                 for try await token in stream {

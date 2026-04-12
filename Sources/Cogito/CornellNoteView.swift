@@ -17,17 +17,7 @@ struct CornellNoteView: View {
                 set: { vm.cornellNotes[pageIndex] = $0.isEmpty ? nil : $0 }
             )
 
-            ZStack(alignment: .top) {
-                TextEditor(text: noteText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color(white: 0.2))
-                    .focused($isFocused)
-                    .onChange(of: isFocused) { _, focused in vm.isEditingText = focused }
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, chapterNode != nil ? 72 : 4)
-                    .background(Color.white)
-
+            VStack(spacing: 0) {
                 if let node = chapterNode {
                     VStack(spacing: 2) {
                         Button {
@@ -38,7 +28,6 @@ struct CornellNoteView: View {
                                 .foregroundStyle(Color.accentColor)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
-                                .background(Color.white)
                         }
                         .buttonStyle(.plain)
                         .help("Generate Video Overview: \(node.label)")
@@ -56,13 +45,24 @@ struct CornellNoteView: View {
                                     .foregroundStyle(Color.orange)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 4)
-                                    .background(Color.white)
                             }
                             .buttonStyle(.plain)
                             .help("Feynman Technique: \(node.label)")
                         }
                     }
+                    .background(Color.white)
                 }
+
+                TextEditor(text: noteText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(white: 0.2))
+                    .focused($isFocused)
+                    .onChange(of: isFocused) { _, focused in
+                        vm.isEditingText = focused
+                    }
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 4)
+                    .background(Color.white)
             }
         }
     }

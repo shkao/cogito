@@ -60,7 +60,10 @@ struct PDFReaderView: NSViewRepresentable {
         }
 
         if needsZoom {
-            DispatchQueue.main.async { self.vm.zoomToFit() }
+            DispatchQueue.main.async {
+                self.vm.zoomToFit()
+                self.vm.applyPendingRestore()
+            }
         }
     }
 
