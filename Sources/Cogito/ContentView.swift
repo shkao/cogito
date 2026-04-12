@@ -561,6 +561,7 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
     @Published var isPlaying = true
     @Published var progress: Double = 0
     @Published var duration: Double = 1
+    @Published var isSeeking = false
     @Published var currentCaption: String?
     @Published var captionsEnabled = true
 
@@ -584,7 +585,10 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] time in
             let s = time.seconds
-            Task { @MainActor [weak self] in self?.progress = s }
+            Task { @MainActor [weak self] in
+                guard let self, !self.isSeeking else { return }
+                self.progress = s
+            }
         }
         setupCaptions()
     }
@@ -734,6 +738,7 @@ struct VideoOverlayView: View {
                     .buttonStyle(.plain)
 
                     Slider(value: $model.progress, in: 0...model.duration) { editing in
+                        model.isSeeking = editing
                         if !editing { model.seek(to: model.progress) }
                     }
                     .tint(Color.white.opacity(0.85))

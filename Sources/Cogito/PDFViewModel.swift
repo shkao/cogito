@@ -217,6 +217,17 @@ class PDFViewModel: ObservableObject {
 
     func open(url: URL) {
         guard let doc = PDFDocument(url: url) else { return }
+
+        outlineInferenceTask?.cancel()
+        outlineInferenceTask = nil
+        for job in videoJobs {
+            job.task?.cancel()
+            Task { await videoService.cancel(title: job.id) }
+            if let pdf = job.chapterPDF { try? FileManager.default.removeItem(at: pdf) }
+        }
+        videoJobs.removeAll()
+        clearTranslation()
+
         cropMarginsVisually(in: doc)
         document = doc
         documentURL = url
@@ -762,6 +773,6 @@ class PDFViewModel: ObservableObject {
         guard let start = response.range(of: "["),
               let end = response.range(of: "]", options: .backwards),
               start.lowerBound <= end.lowerBound else { return nil }
-        return String(response[start.lowerBound...end.upperBound])
+        return String(response[start.lowerBound..<end.upperBound])
     }
 }

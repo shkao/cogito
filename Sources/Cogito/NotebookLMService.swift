@@ -139,15 +139,33 @@ actor NotebookLMService {
         if !hadTerminalStatus {
             proc.waitUntilExit()
             let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrText = (String(data: stderrData, encoding: .utf8) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let msg = stderrText.isEmpty
-                ? "Process exited with code \(proc.terminationStatus)"
-                : stderrText
-            continuation.yield(.error(msg))
+            let stderrText = Self.filterStderr(
+                String(data: stderrData, encoding: .utf8) ?? ""
+            )
+            if proc.terminationStatus != 0 || !stderrText.isEmpty {
+                let msg = stderrText.isEmpty
+                    ? "Process exited with code \(proc.terminationStatus)"
+                    : stderrText
+                continuation.yield(.error(msg))
+            }
         }
 
         continuation.finish()
+    }
+
+    /// Strips pip/Python informational lines from stderr so they don't get
+    /// surfaced as video generation errors.
+    private static func filterStderr(_ raw: String) -> String {
+        raw.components(separatedBy: .newlines)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty { return false }
+                if trimmed.hasPrefix("WARNING:") { return false }
+                if trimmed.hasPrefix("[notice]") { return false }
+                return true
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func parse(_ data: Data) -> VideoStatus? {
