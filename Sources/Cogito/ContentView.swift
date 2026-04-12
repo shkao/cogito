@@ -22,14 +22,13 @@ struct ContentView: View {
                     if vm.displayMode == .twoPage {
                         HStack(spacing: 0) {
                             CornellNoteView(pageIndex: vm.currentPageIndex)
-                                .frame(width: vm.conceptCueWidth(for: vm.currentPageIndex))
+                                .frame(width: 48)
                             PDFReaderView()
                             if vm.currentPageIndex + 1 < vm.totalPages {
                                 CornellNoteView(pageIndex: vm.currentPageIndex + 1)
-                                    .frame(width: vm.conceptCueWidth(for: vm.currentPageIndex + 1))
+                                    .frame(width: 48)
                             }
                         }
-                        .animation(.easeInOut(duration: 0.25), value: vm.conceptCues[vm.currentPageIndex] != nil)
                     } else {
                         PDFReaderView()
                     }

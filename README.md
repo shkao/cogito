@@ -6,7 +6,7 @@
 
 *Cogito, ergo sum.* I think, therefore I am.
 
-macOS PDF reader for active reading. Open a PDF, take edge notes beside each page, look up any word, test yourself with Feynman concept cues, and generate a NotebookLM video overview for any chapter. Chapter structure is detected automatically on-device with a local LLM when the PDF has no embedded outline. Reading progress is restored when you reopen a book.
+macOS PDF reader for active reading. Open a PDF, take edge notes beside each page, look up any word, and generate a NotebookLM video overview for any chapter. Chapter structure is detected automatically on-device with a local LLM when the PDF has no embedded outline. Reading progress is restored when you reopen a book.
 
 ## Features
 
@@ -16,21 +16,9 @@ Edge notes in two-page mode: narrow panels beside each page for free-form notes.
 
 Word translation: select any word and get a Wikipedia-powered card in one of eight languages.
 
-Feynman concept cues: click the lightbulb icon on any chapter's first page (in two-page mode). The on-device LLM extracts 3-5 key concepts from the chapter and asks you to explain each one in simple terms. After you write your explanation, click "Check Gaps" to get targeted questions about what you missed or oversimplified. Click "Show Model Answer" to see a reference explanation. The cue panel expands in place beside the page. Your explanations and feedback persist across sessions.
+Chapter video overviews: click the video icon on any chapter's first page in two-page mode, or on the chapter row in the outline sidebar. Cogito extracts that chapter, uploads it to Google NotebookLM with an animation brief, and streams generation progress. The finished MP4 plays in a full-window overlay with captions. Chapters with existing videos show a green checkmark in the outline.
 
-How to use concept cues:
-
-1. Open a PDF in two-page mode.
-2. Navigate to a chapter start page (any page with a lightbulb icon in the edge panel).
-3. Click the lightbulb. The LLM extracts key concepts and places a cue card on each relevant page.
-4. Read the prompt question on the card. Write your explanation in the text field.
-5. Click "Check Gaps" to get feedback framed as guiding questions.
-6. Click "Show Model Answer" to reveal the reference explanation.
-7. Concept cues save automatically. They reload when you reopen the same PDF.
-
-Chapter video overviews: click the video icon on any chapter in the outline sidebar. Cogito extracts that chapter, uploads it to Google NotebookLM with an animation brief, and streams generation progress. The finished MP4 plays in a full-window overlay with captions. Chapters with existing videos show a green checkmark in the outline.
-
-On-device LLM: Gemma 3n E4B via mlx-swift powers both chapter structure detection (from TOC pages when the PDF has no outline) and Feynman concept cue extraction. Runs on the Apple Silicon Neural Engine, no internet required.
+On-device LLM: Gemma 3n E4B via mlx-swift detects chapter structure from TOC pages when the PDF has no outline. Runs on the Apple Silicon Neural Engine, no internet required.
 
 ## Architecture
 
@@ -49,7 +37,7 @@ graph TD
             PR["PDFReaderView"]
         end
 
-        VM[["PDFViewModel\nnav · bookmarks · outline · search\nnotes · concept cues · video state\nreading progress"]]
+        VM[["PDFViewModel\nnav · bookmarks · outline · search\nnotes · video state · reading progress"]]
 
         PDFKit[["PDFKit"]]
 
@@ -111,9 +99,7 @@ cogito/
 │   ├── PDFViewModel.swift               # all app state
 │   ├── PDFReaderView.swift              # PDFKit bridge, word selection
 │   ├── SidebarView.swift                # outline / thumbnails / bookmarks / videos
-│   ├── CornellNoteView.swift            # edge note editor + concept cue trigger
-│   ├── FeynmanCardView.swift            # concept cue explain/review/refine card
-│   ├── ConceptCue.swift                 # concept cue model and persistence types
+│   ├── CornellNoteView.swift            # edge note editor
 │   ├── TranslationCardView.swift        # word translation card
 │   ├── VideoGenerationBannerView.swift  # generation status banner
 │   ├── NotebookLMService.swift          # process actor, status streaming
