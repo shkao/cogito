@@ -117,6 +117,16 @@ class PDFViewModel: ObservableObject {
     @Published var bookmarks: Set<Int> = []
     @Published var cornellNotes: [Int: String] = [:]
 
+    // MARK: Feynman Concept Cues
+    @Published var conceptCues: [Int: ConceptCue] = [:]  // keyed by pageIndex
+    @Published var isExtractingConcepts: Bool = false
+    @Published var isAnalyzingGaps: Bool = false
+    @Published var isGeneratingModelAnswer: Bool = false
+    private var conceptCueTask: Task<Void, Never>?
+    private var gapAnalysisTask: Task<Void, Never>?
+    private var modelAnswerTask: Task<Void, Never>?
+    private var conceptCueSaveTask: Task<Void, Never>?
+
     // MARK: Translation
     @Published var selectedWord: String?
     @Published var wordTranslation: WikiTranslation?
@@ -224,12 +234,15 @@ class PDFViewModel: ObservableObject {
         searchQuery = ""
         bookmarks = []
         cornellNotes = [:]
+        conceptCues = [:]
         let nodes = doc.outlineRoot.map { buildOutlineNodes(from: $0, document: doc) } ?? []
         outlineNodes = nodes
         if nodes.isEmpty {
             inferOutlineWithLLM(doc: doc)
         }
+        loadConceptCues()
         refreshCachedVideos()
+        restoreReadingProgress()
     }
 
     private func buildOutlineNodes(from outline: PDFOutline, document: PDFDocument) -> [OutlineNode] {
@@ -303,6 +316,22 @@ class PDFViewModel: ObservableObject {
               let page = doc.page(at: index) else { return }
         currentPageIndex = index
         pdfView?.go(to: page)
+        saveReadingProgress()
+    }
+
+    // MARK: Reading Progress
+
+    private func saveReadingProgress() {
+        guard documentURL != nil else { return }
+        UserDefaults.standard.set(currentPageIndex, forKey: "readingProgress_\(bookHash)")
+    }
+
+    private func restoreReadingProgress() {
+        let saved = UserDefaults.standard.integer(forKey: "readingProgress_\(bookHash)")
+        guard saved > 0, saved < totalPages,
+              let doc = document, let page = doc.page(at: saved) else { return }
+        currentPageIndex = saved
+        pdfView?.go(to: page)
     }
 
     private var pageStep: Int { displayMode.isTwoPage ? 2 : 1 }
@@ -320,6 +349,7 @@ class PDFViewModel: ObservableObject {
         let newIndex = doc.index(for: page)
         guard newIndex != currentPageIndex else { return }
         currentPageIndex = newIndex
+        saveReadingProgress()
     }
 
     // MARK: Zoom
@@ -460,24 +490,25 @@ class PDFViewModel: ObservableObject {
     }
 
     private func videoPath(for title: String) -> URL {
-        let safe = title.map { c -> Character in
-            c.isLetter || c.isNumber || c == " " || c == "-" || c == "_" ? c : "_"
-        }
-        .map(String.init).joined()
-        .trimmingCharacters(in: .whitespaces)
+        let safe = sanitizeTitle(title)
         return videoOutputDir().appendingPathComponent("\(safe)_\(bookHash).mp4")
     }
 
     func hasVideo(for title: String) -> Bool {
-        cachedVideos.contains { videoTitle(from: $0) == title }
+        FileManager.default.fileExists(atPath: videoPath(for: title).path)
     }
 
     func videoTitle(from url: URL) -> String {
         let base = url.deletingPathExtension().lastPathComponent
-        // No underscore substitution: the name preserves spaces already, and
-        // replacing `_` would corrupt colons that the sanitizer mapped to `_`.
         guard base.count > 7, base.dropFirst(base.count - 7).first == "_" else { return base }
         return String(base.dropLast(7))
+    }
+
+    private func sanitizeTitle(_ title: String) -> String {
+        String(title.map { c in
+            c.isLetter || c.isNumber || c == " " || c == "-" || c == "_" ? c : Character("_")
+        })
+        .trimmingCharacters(in: .whitespaces)
     }
 
     func generateVideoOverview(for node: OutlineNode, forceRegenerate: Bool = false) {
@@ -596,6 +627,270 @@ class PDFViewModel: ObservableObject {
         }
     }
 
+    // MARK: Feynman Concept Cues
+
+    func conceptCueWidth(for pageIndex: Int) -> CGFloat {
+        conceptCues[pageIndex] != nil ? 220 : 48
+    }
+
+    func extractConceptCues(for node: OutlineNode) {
+        guard !isExtractingConcepts else { return }
+        isExtractingConcepts = true
+        conceptCueTask?.cancel()
+        conceptCueTask = Task {
+            defer { isExtractingConcepts = false }
+            guard let doc = document else { return }
+
+            let range = chapterPageRange(for: node)
+            let sampledText = sampleChapterText(from: doc, range: range)
+            guard !sampledText.isEmpty else { return }
+
+            let prompt = """
+            Below is text sampled from a textbook chapter titled "\(node.label)".
+            Identify 3-5 key concepts a student must understand to grasp this chapter.
+            For each, write a question that asks the student to explain it in simple terms,
+            as if talking to a 12-year-old (use analogies, metaphors, everyday examples).
+
+            Return JSON: [{"concept": "...", "prompt": "..."}]
+
+            \(sampledText)
+            """
+
+            var response = ""
+            do {
+                let stream = await LLMService.shared.generate(
+                    prompt: prompt,
+                    systemPrompt: "You identify key concepts from textbook chapters. Return ONLY a valid JSON array, no other text.",
+                    maxTokens: 512
+                )
+                for try await token in stream {
+                    if Task.isCancelled { return }
+                    response += token
+                }
+            } catch {
+                return
+            }
+
+            let cues = parseConceptCues(response: response, chapterRange: range, doc: doc)
+            guard !cues.isEmpty else { return }
+
+            for cue in cues {
+                conceptCues[cue.pageIndex] = cue
+            }
+            saveConceptCues(for: node.pageIndex, chapterLabel: node.label)
+        }
+    }
+
+    func analyzeGaps(for pageIndex: Int) {
+        guard var cue = conceptCues[pageIndex],
+              !cue.userExplanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !isAnalyzingGaps else { return }
+        isAnalyzingGaps = true
+        gapAnalysisTask?.cancel()
+        gapAnalysisTask = Task {
+            defer { isAnalyzingGaps = false }
+            guard let doc = document else { return }
+
+            let pageContext = PDFTextExtractor.contextWindow(document: doc, centerPage: pageIndex, radius: 1)
+            let prompt = """
+            The student was asked: "\(cue.promptQuestion)"
+
+            Their explanation: "\(cue.userExplanation)"
+
+            Source material from the textbook:
+            \(pageContext)
+
+            Identify 1-3 specific gaps, inaccuracies, or oversimplifications in the student's explanation. Frame each as a question that guides them back to the source material.
+            Return JSON: ["question1", "question2", ...]
+            """
+
+            var response = ""
+            do {
+                let stream = await LLMService.shared.generate(
+                    prompt: prompt,
+                    systemPrompt: "You help students identify gaps in their understanding. Be specific. Frame observations as questions. Never give the answer directly.",
+                    maxTokens: 384
+                )
+                for try await token in stream {
+                    if Task.isCancelled { return }
+                    response += token
+                }
+            } catch {
+                return
+            }
+
+            guard let jsonStr = extractJSONArray(from: response),
+                  let data = jsonStr.data(using: .utf8),
+                  let questions = try? JSONSerialization.jsonObject(with: data) as? [String],
+                  !questions.isEmpty else { return }
+
+            cue.gapFeedback = questions
+            cue.step = .reviewed
+            conceptCues[pageIndex] = cue
+            saveConceptCuesForPage(pageIndex)
+        }
+    }
+
+    func revealModelExplanation(for pageIndex: Int) {
+        guard var cue = conceptCues[pageIndex],
+              cue.modelExplanation == nil,
+              !isGeneratingModelAnswer else { return }
+        isGeneratingModelAnswer = true
+        modelAnswerTask?.cancel()
+        modelAnswerTask = Task {
+            defer { isGeneratingModelAnswer = false }
+            guard let doc = document else { return }
+
+            let pageContext = PDFTextExtractor.contextWindow(document: doc, centerPage: pageIndex, radius: 1)
+            let prompt = "Explain \"\(cue.concept)\" simply.\n\nContext:\n\(pageContext)"
+
+            var response = ""
+            do {
+                let stream = await LLMService.shared.generate(
+                    prompt: prompt,
+                    systemPrompt: "Explain concepts simply, as if talking to a curious 12-year-old. Use one strong metaphor or analogy. Under 80 words.",
+                    maxTokens: 256
+                )
+                for try await token in stream {
+                    if Task.isCancelled { return }
+                    response += token
+                }
+            } catch {
+                return
+            }
+
+            let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+
+            cue.modelExplanation = trimmed
+            cue.step = .refined
+            conceptCues[pageIndex] = cue
+            saveConceptCuesForPage(pageIndex)
+        }
+    }
+
+    func updateConceptCueExplanation(pageIndex: Int, text: String) {
+        guard var cue = conceptCues[pageIndex] else { return }
+        cue.userExplanation = text
+        conceptCues[pageIndex] = cue
+
+        conceptCueSaveTask?.cancel()
+        conceptCueSaveTask = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            saveConceptCuesForPage(pageIndex)
+        }
+    }
+
+    // MARK: Concept Cue Persistence
+
+    private func conceptCueStorageDir() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = appSupport.appendingPathComponent("com.cogito.app/ConceptCues", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func saveConceptCues(for chapterPageIndex: Int, chapterLabel: String) {
+        let cuesForChapter = conceptCues.values.filter { cue in
+            // Find which chapter this cue belongs to by checking outline ranges
+            outlineNodes.contains { node in
+                node.pageIndex == chapterPageIndex && chapterPageRange(for: node).contains(cue.pageIndex)
+            }
+        }
+        let store = ConceptCueStore(cues: Array(cuesForChapter), chapterLabel: chapterLabel)
+        let path = conceptCueStorageDir().appendingPathComponent("\(bookHash)_\(chapterPageIndex).json")
+        if let data = try? JSONEncoder().encode(store) {
+            try? data.write(to: path, options: .atomic)
+        }
+    }
+
+    private func saveConceptCuesForPage(_ pageIndex: Int) {
+        // Find which chapter this page belongs to and save that chapter's cues
+        for node in outlineNodes {
+            let range = chapterPageRange(for: node)
+            if range.contains(pageIndex) {
+                saveConceptCues(for: node.pageIndex, chapterLabel: node.label)
+                return
+            }
+        }
+    }
+
+    func loadConceptCues() {
+        let dir = conceptCueStorageDir()
+        let hash = bookHash
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+        ) else { return }
+
+        conceptCues = [:]
+        for file in files where file.lastPathComponent.hasPrefix("\(hash)_") && file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let store = try? JSONDecoder().decode(ConceptCueStore.self, from: data) else { continue }
+            for cue in store.cues {
+                conceptCues[cue.pageIndex] = cue
+            }
+        }
+    }
+
+    // MARK: Concept Cue Helpers
+
+    private func sampleChapterText(from doc: PDFDocument, range: Range<Int>) -> String {
+        let pageCount = range.count
+        var indices: [Int] = []
+
+        // First 3 pages (intro, definitions)
+        for i in 0..<min(3, pageCount) { indices.append(range.lowerBound + i) }
+
+        // Middle 2 pages
+        let mid = range.lowerBound + pageCount / 2
+        for offset in [-1, 0] {
+            let idx = mid + offset
+            if !indices.contains(idx) && range.contains(idx) { indices.append(idx) }
+        }
+
+        // Last 2 pages (summary, conclusion)
+        for offset in [-2, -1] {
+            let idx = range.upperBound + offset
+            if idx >= 0 && !indices.contains(idx) && range.contains(idx) { indices.append(idx) }
+        }
+
+        return indices.sorted().compactMap { i -> String? in
+            guard let page = doc.page(at: i) else { return nil }
+            return PDFTextExtractor.text(from: page)
+        }.joined(separator: "\n\n")
+    }
+
+    private func parseConceptCues(response: String, chapterRange: Range<Int>, doc: PDFDocument) -> [ConceptCue] {
+        guard let jsonStr = extractJSONArray(from: response),
+              let data = jsonStr.data(using: .utf8),
+              let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: String]]
+        else { return [] }
+
+        return entries.compactMap { entry -> ConceptCue? in
+            guard let concept = entry["concept"], !concept.isEmpty,
+                  let prompt = entry["prompt"], !prompt.isEmpty else { return nil }
+            let pageIndex = mapConceptToPage(concept: concept, in: chapterRange, doc: doc)
+            return ConceptCue(concept: concept, promptQuestion: prompt, pageIndex: pageIndex)
+        }
+    }
+
+    private func mapConceptToPage(concept: String, in range: Range<Int>, doc: PDFDocument) -> Int {
+        let searchTerms = concept.lowercased().split(separator: " ").filter { $0.count >= 3 }
+        guard !searchTerms.isEmpty else { return range.lowerBound }
+
+        for i in range {
+            guard let page = doc.page(at: i),
+                  let text = PDFTextExtractor.text(from: page)?.lowercased() else { continue }
+            let matches = searchTerms.filter { text.contains($0) }
+            if matches.count >= max(1, searchTerms.count / 2) {
+                return i
+            }
+        }
+        return range.lowerBound
+    }
+
     // MARK: LLM-based TOC inference
 
     private func inferOutlineWithLLM(doc: PDFDocument) {
@@ -672,12 +967,8 @@ class PDFViewModel: ObservableObject {
         labelIndex: [String: Int],
         doc: PDFDocument
     ) -> [OutlineNode] {
-        // Extract JSON array from response (LLM may add preamble/postamble)
-        guard let startRange = response.range(of: "["),
-              let endRange = response.range(of: "]", options: .backwards),
-              startRange.lowerBound <= endRange.lowerBound else { return [] }
-        let jsonStr = String(response[startRange.lowerBound...endRange.upperBound])
-        guard let data = jsonStr.data(using: .utf8),
+        guard let jsonStr = extractJSONArray(from: response),
+              let data = jsonStr.data(using: .utf8),
               let entries = try? JSONSerialization.jsonObject(with: data) as? [[String: String]]
         else { return [] }
 
@@ -733,5 +1024,13 @@ class PDFViewModel: ObservableObject {
             .components(separatedBy: .whitespaces)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// Extracts a JSON array substring from an LLM response that may contain preamble/postamble.
+    private func extractJSONArray(from response: String) -> String? {
+        guard let start = response.range(of: "["),
+              let end = response.range(of: "]", options: .backwards),
+              start.lowerBound <= end.lowerBound else { return nil }
+        return String(response[start.lowerBound...end.upperBound])
     }
 }
