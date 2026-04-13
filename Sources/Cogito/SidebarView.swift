@@ -63,20 +63,45 @@ struct OutlineSidebarView: View {
         } else {
             ScrollViewReader { proxy in
                 let activePath = vm.activeOutlinePath(for: vm.currentPageIndex)
-                List {
-                    ForEach(vm.outlineNodes) { node in
-                        OutlineNodeView(node: node, expandedNodes: $expandedNodes, activePath: activePath, isTopLevel: true)
+                let flat = flattenOutline(nodes: vm.outlineNodes, expandedNodes: expandedNodes, activePath: activePath)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(flat.items.enumerated()), id: \.element.node.id) { index, item in
+                            if item.depth == 0 && index > 0 {
+                                Rectangle()
+                                    .fill(Color.primary.opacity(0.08))
+                                    .frame(height: 0.5)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                            }
+                            OutlineRowView(
+                                node: item.node,
+                                isActive: item.isActive,
+                                isDeepestActive: item.isDeepestActive,
+                                depth: item.depth
+                            ) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    if expandedNodes.contains(item.node.id) {
+                                        expandedNodes.remove(item.node.id)
+                                    } else {
+                                        expandedNodes.insert(item.node.id)
+                                    }
+                                }
+                            }
+                            .id(item.node.id)
+                            .padding(.leading, CGFloat(item.depth) * 16)
+                        }
                     }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 4)
                 }
-                .listStyle(.sidebar)
                 .onChange(of: vm.currentPageIndex) { _, _ in
                     let path = vm.activeOutlinePath(for: vm.currentPageIndex)
-                    // Only expand the active path; collapse everything else
                     withAnimation(.easeInOut(duration: 0.2)) {
                         expandedNodes = path
                     }
-                    // Scroll to the deepest active node
-                    if let deepest = deepestActiveNode(in: vm.outlineNodes, path: path) {
+                    let result = flattenOutline(nodes: vm.outlineNodes, expandedNodes: path, activePath: path)
+                    if let deepest = result.deepestActiveID {
                         withAnimation {
                             proxy.scrollTo(deepest, anchor: .center)
                         }
@@ -86,63 +111,45 @@ struct OutlineSidebarView: View {
         }
     }
 
-    /// Walk the tree to find the deepest node whose ID is in the active path.
-    private func deepestActiveNode(in nodes: [OutlineNode], path: Set<UUID>) -> UUID? {
-        for node in nodes.reversed() {
-            guard path.contains(node.id) else { continue }
-            if let kids = node.children,
-               let deeper = deepestActiveNode(in: kids, path: path) {
-                return deeper
-            }
-            return node.id
-        }
-        return nil
-    }
 }
 
-/// Recursive outline node with controlled expansion.
-private struct OutlineNodeView: View {
-    @EnvironmentObject var vm: PDFViewModel
+struct FlatOutlineItem {
     let node: OutlineNode
-    @Binding var expandedNodes: Set<UUID>
-    let activePath: Set<UUID>
-    var isTopLevel: Bool = false
+    let depth: Int
+    let isActive: Bool
+    let isDeepestActive: Bool
+}
 
-    private var isActive: Bool { activePath.contains(node.id) }
+struct FlatOutlineResult {
+    let items: [FlatOutlineItem]
+    let deepestActiveID: UUID?
+}
 
-    /// True when this node is in the active path and none of its children are.
-    private var isDeepestActive: Bool {
-        guard isActive else { return false }
-        guard let children = node.children else { return true }
-        return !children.contains { activePath.contains($0.id) }
-    }
-
-    var body: some View {
-        if let children = node.children, !children.isEmpty {
-            DisclosureGroup(
-                isExpanded: Binding(
-                    get: { expandedNodes.contains(node.id) },
-                    set: { isExpanded in
-                        if isExpanded {
-                            expandedNodes.insert(node.id)
-                        } else {
-                            expandedNodes.remove(node.id)
-                        }
-                    }
-                )
-            ) {
-                ForEach(children) { child in
-                    OutlineNodeView(node: child, expandedNodes: $expandedNodes, activePath: activePath, isTopLevel: false)
-                }
-            } label: {
-                OutlineRowView(node: node, isActive: isActive, isDeepestActive: isDeepestActive, isTopLevel: isTopLevel)
+private func flattenOutline(
+    nodes: [OutlineNode],
+    expandedNodes: Set<UUID>,
+    activePath: Set<UUID>,
+    depth: Int = 0
+) -> FlatOutlineResult {
+    var items: [FlatOutlineItem] = []
+    var deepestActiveID: UUID?
+    func walk(_ nodes: [OutlineNode], depth: Int) {
+        for node in nodes {
+            let isActive = activePath.contains(node.id)
+            let isDeepestActive: Bool = {
+                guard isActive else { return false }
+                guard let children = node.children else { return true }
+                return !children.contains { activePath.contains($0.id) }
+            }()
+            if isDeepestActive { deepestActiveID = node.id }
+            items.append(FlatOutlineItem(node: node, depth: depth, isActive: isActive, isDeepestActive: isDeepestActive))
+            if let children = node.children, !children.isEmpty, expandedNodes.contains(node.id) {
+                walk(children, depth: depth + 1)
             }
-            .id(node.id)
-        } else {
-            OutlineRowView(node: node, isActive: isActive, isDeepestActive: isDeepestActive, isTopLevel: isTopLevel)
-                .id(node.id)
         }
     }
+    walk(nodes, depth: depth)
+    return FlatOutlineResult(items: items, deepestActiveID: deepestActiveID)
 }
 
 // MARK: - Video Library
@@ -233,7 +240,8 @@ struct OutlineRowView: View {
     let node: OutlineNode
     var isActive: Bool = false
     var isDeepestActive: Bool = false
-    var isTopLevel: Bool = false
+    var depth: Int = 0
+    var onToggleExpand: (() -> Void)?
     @State private var isHovered = false
 
     private var isEligibleForVideo: Bool {
@@ -252,70 +260,117 @@ struct OutlineRowView: View {
         vm.hasMindmap(for: node.label)
     }
 
+    private var isMindmapGenerating: Bool {
+        vm.mindmapGenerating.contains(node.label)
+    }
+
+    private var fontSize: Font {
+        switch depth {
+        case 0:  return .body
+        case 1:  return .callout
+        default: return .footnote
+        }
+    }
+
+    private var fontWeight: Font.Weight {
+        if depth == 0 { return isActive ? .semibold : .medium }
+        return isActive ? .medium : .regular
+    }
+
+    private var shouldShowActions: Bool {
+        isHovered || hasExistingMindmap || hasExistingVideo || isGeneratingVideo || isMindmapGenerating
+    }
+
     var body: some View {
         Button {
             vm.goToPage(node.pageIndex)
+            if node.children?.isEmpty == false { onToggleExpand?() }
         } label: {
-            HStack(spacing: 4) {
-                if isDeepestActive {
-                    Image(systemName: "arrowtriangle.right.fill")
-                        .font(.system(size: 7))
-                        .foregroundStyle(Color(.systemIndigo))
-                }
+            HStack(spacing: 6) {
                 Text(node.label)
-                    .font(.callout)
-                    .fontWeight(isActive ? .semibold : .regular)
-                    .foregroundStyle(isActive ? Color(.systemIndigo) : .primary)
+                    .font(fontSize)
+                    .fontWeight(fontWeight)
+                    .foregroundStyle(isDeepestActive ? Color.accentColor : .primary)
                     .lineLimit(2)
-                Spacer()
-                if isTopLevel && isEligibleForVideo {
-                    Button {
-                        vm.generateMindmap(for: node)
-                    } label: {
-                        Image(systemName: vm.mindmapGenerating.contains(node.label)
-                              ? "brain.head.profile.fill"
-                              : (hasExistingMindmap ? "brain.fill" : "brain"))
-                            .font(.system(size: 10))
-                            .foregroundStyle(
-                                vm.mindmapGenerating.contains(node.label)
-                                    ? Color(.systemIndigo).opacity(0.75)
-                                    : (hasExistingMindmap
-                                        ? Color(.systemIndigo).opacity(0.75)
-                                        : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
-                            )
-                            .symbolEffect(.pulse, isActive: vm.mindmapGenerating.contains(node.label))
-                    }
-                    .buttonStyle(.plain)
-                    .help(hasExistingMindmap ? "View mindmap: \"\(node.label)\"" : "Generate mindmap: \"\(node.label)\"")
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button {
-                        if hasExistingVideo {
-                            vm.playingVideoURL = vm.videoURL(for: node.label)
-                        } else {
-                            vm.generateVideoOverview(for: node)
+                Text(node.pageLabel)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+
+                if depth == 0 && isEligibleForVideo {
+                    HStack(spacing: 6) {
+                        Button {
+                            vm.generateMindmap(for: node)
+                        } label: {
+                            Image(systemName: isMindmapGenerating
+                                  ? "brain.head.profile.fill"
+                                  : (hasExistingMindmap ? "brain.fill" : "brain"))
+                                .font(.system(size: 13))
+                                .foregroundStyle(
+                                    isMindmapGenerating
+                                        ? Color.accentColor.opacity(0.75)
+                                        : (hasExistingMindmap
+                                            ? Color.accentColor.opacity(0.75)
+                                            : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
+                                )
+                                .symbolEffect(.pulse, isActive: isMindmapGenerating)
                         }
-                    } label: {
-                        Image(systemName: isGeneratingVideo
-                              ? "video.badge.ellipsis"
-                              : (hasExistingVideo ? "video.badge.checkmark" : "video.badge.waveform"))
-                            .font(.system(size: 10))
-                            .foregroundStyle(
-                                isGeneratingVideo
-                                    ? Color(.systemTeal).opacity(0.8)
-                                    : (hasExistingVideo
-                                        ? Color(.systemTeal).opacity(0.8)
-                                        : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
-                            )
-                            .symbolEffect(.pulse, isActive: isGeneratingVideo)
+                        .buttonStyle(.plain)
+                        .help(hasExistingMindmap ? "View mindmap: \"\(node.label)\"" : "Generate mindmap: \"\(node.label)\"")
+
+                        Button {
+                            if hasExistingVideo {
+                                vm.playingVideoURL = vm.videoURL(for: node.label)
+                            } else {
+                                vm.generateVideoOverview(for: node)
+                            }
+                        } label: {
+                            Image(systemName: isGeneratingVideo
+                                  ? "video.badge.ellipsis"
+                                  : (hasExistingVideo ? "video.badge.checkmark" : "video.badge.waveform"))
+                                .font(.system(size: 13))
+                                .foregroundStyle(
+                                    isGeneratingVideo
+                                        ? Color.teal.opacity(0.8)
+                                        : (hasExistingVideo
+                                            ? Color.teal.opacity(0.8)
+                                            : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
+                                )
+                                .symbolEffect(.pulse, isActive: isGeneratingVideo)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isGeneratingVideo
+                              ? "Generating video..."
+                              : (hasExistingVideo ? "Watch: \"\(node.label)\"" : "Generate Video Overview for \"\(node.label)\""))
                     }
-                    .buttonStyle(.plain)
-                    .help(isGeneratingVideo
-                          ? "Generating video..."
-                          : (hasExistingVideo ? "Watch: \"\(node.label)\"" : "Generate Video Overview for \"\(node.label)\""))
+                    .opacity(shouldShowActions ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 0.15), value: isHovered)
                 }
             }
         }
         .buttonStyle(.plain)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .background {
+            if isDeepestActive {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.12))
+            } else if isHovered {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.primary.opacity(0.04))
+            }
+        }
+        .overlay(alignment: .leading) {
+            if isDeepestActive {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.1), value: isHovered)
     }
