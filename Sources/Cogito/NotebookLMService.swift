@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let logger = Logger(subsystem: "com.cogito.app", category: "video")
 
 // MARK: - VideoStatus
 
@@ -18,8 +21,28 @@ enum VideoStatus: Sendable {
         case .downloading: return "Downloading video..."
         case .done: return "Video ready"
         case .authRequired: return "Login required"
-        case .error(let msg): return msg
+        case .error(let msg): return Self.stripNoise(msg)
         }
+    }
+
+    /// Strips pip/Python informational lines so they never reach the UI.
+    /// For Python tracebacks, extracts just the final error line.
+    fileprivate static func stripNoise(_ raw: String) -> String {
+        let lines = raw.components(separatedBy: .newlines)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { return false }
+                if trimmed.hasPrefix("[notice]") { return false }
+                if trimmed.hasPrefix("WARNING:") { return false }
+                return true
+            }
+        guard !lines.isEmpty else { return "Unknown error" }
+        // Python tracebacks start with "Traceback (most recent call last):".
+        // The useful part is the last line (e.g. "ValueError: ...").
+        if lines.first?.hasPrefix("Traceback") == true, let last = lines.last {
+            return last.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var isTerminal: Bool {
@@ -60,6 +83,7 @@ enum VideoStyle: String, CaseIterable, Identifiable {
 
 actor NotebookLMService {
     private var activeProcesses: [String: Process] = [:]
+    private var resolvedPython: String?
     private static let authKeywords = ["auth", "login", "cookie", "credential", "unauthenticated", "permission", "403", "sign in"]
 
     func generateVideo(
@@ -95,10 +119,17 @@ actor NotebookLMService {
             return
         }
 
+        if resolvedPython == nil { resolvedPython = Self.resolvePython() }
+        guard let python = resolvedPython else {
+            continuation.yield(.error("python3 with notebooklm not found. Run: pip install notebooklm-py"))
+            continuation.finish()
+            return
+        }
+
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.executableURL = URL(fileURLWithPath: python)
         proc.arguments = [
-            "python3", scriptPath,
+            scriptPath,
             "--pdf-path", pdfPath.path,
             "--output-path", outputPath.path,
             "--title", title,
@@ -138,14 +169,14 @@ actor NotebookLMService {
         // crashed before printing any JSON), surface stderr as the error message.
         if !hadTerminalStatus {
             proc.waitUntilExit()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrText = Self.filterStderr(
-                String(data: stderrData, encoding: .utf8) ?? ""
-            )
+            let rawStderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            logger.error("Video process stderr:\n\(rawStderr, privacy: .public)")
+            let stderrText = Self.filterStderr(rawStderr)
             if proc.terminationStatus != 0 || !stderrText.isEmpty {
                 let msg = stderrText.isEmpty
                     ? "Process exited with code \(proc.terminationStatus)"
                     : stderrText
+                logger.error("Video generation failed: \(msg, privacy: .public)")
                 continuation.yield(.error(msg))
             }
         }
@@ -153,19 +184,8 @@ actor NotebookLMService {
         continuation.finish()
     }
 
-    /// Strips pip/Python informational lines from stderr so they don't get
-    /// surfaced as video generation errors.
     private static func filterStderr(_ raw: String) -> String {
-        raw.components(separatedBy: .newlines)
-            .filter { line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if trimmed.isEmpty { return false }
-                if trimmed.hasPrefix("WARNING:") { return false }
-                if trimmed.hasPrefix("[notice]") { return false }
-                return true
-            }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        VideoStatus.stripNoise(raw)
     }
 
     private static func parse(_ data: Data) -> VideoStatus? {
@@ -185,6 +205,7 @@ actor NotebookLMService {
             return .done(videoPath: URL(fileURLWithPath: path))
         case "error":
             let msg = json["message"] as? String ?? "Unknown error"
+            logger.error("Video script error: \(msg, privacy: .public)")
             let lower = msg.lowercased()
             if Self.authKeywords.contains(where: { lower.contains($0) }) {
                 return .authRequired
@@ -217,6 +238,34 @@ actor NotebookLMService {
             return dev.path
         }
 
+        return nil
+    }
+
+    /// Finds a python3 that has the notebooklm package installed.
+    /// The .app bundle inherits a minimal PATH, so we probe common locations.
+    private static func resolvePython() -> String? {
+        let candidates = [
+            "/opt/homebrew/Caskroom/miniconda/base/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ]
+        for path in candidates {
+            guard FileManager.default.isExecutableFile(atPath: path) else { continue }
+            // Verify the notebooklm package is importable
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: path)
+            proc.arguments = ["-c", "import notebooklm"]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 { return path }
+            } catch {
+                continue
+            }
+        }
         return nil
     }
 }

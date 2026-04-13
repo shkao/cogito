@@ -8,26 +8,19 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Mode switcher
-            HStack(spacing: 0) {
+            Picker("Sidebar Mode", selection: $vm.sidebarMode) {
                 ForEach(SidebarMode.allCases) { mode in
-                    Button {
-                        vm.sidebarMode = mode
-                    } label: {
-                        Image(systemName: mode.icon)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(vm.sidebarMode == mode ? Color.accentColor.opacity(0.15) : .clear)
-                            .foregroundColor(vm.sidebarMode == mode ? .accentColor : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(mode.label)
+                    Image(systemName: mode.icon)
+                        .tag(mode)
+                        .accessibilityLabel(mode.label)
                 }
             }
-            .padding(.horizontal, 4)
-            .padding(.top, 6)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
 
-            Divider().padding(.top, 6)
+            Divider().padding(.top, 8)
 
             // Content
             switch vm.sidebarMode {
@@ -44,6 +37,7 @@ struct SidebarView: View {
 
 struct OutlineSidebarView: View {
     @EnvironmentObject var vm: PDFViewModel
+    @State private var expandedNodes: Set<UUID> = []
 
     var body: some View {
         if vm.outlineNodes.isEmpty {
@@ -53,24 +47,100 @@ struct OutlineSidebarView: View {
                         .scaleEffect(0.85)
                     Text("Detecting chapters...")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 } else {
                     Image(systemName: "list.bullet.indent")
                         .font(.title2)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                     Text(vm.document == nil ? "No document open" : "No outline available")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding()
         } else {
-            List(vm.outlineNodes, children: \.children) { node in
-                OutlineRowView(node: node)
+            ScrollViewReader { proxy in
+                let activePath = vm.activeOutlinePath(for: vm.currentPageIndex)
+                List {
+                    ForEach(vm.outlineNodes) { node in
+                        OutlineNodeView(node: node, expandedNodes: $expandedNodes, activePath: activePath, isTopLevel: true)
+                    }
+                }
+                .listStyle(.sidebar)
+                .onChange(of: vm.currentPageIndex) { _, _ in
+                    let path = vm.activeOutlinePath(for: vm.currentPageIndex)
+                    // Only expand the active path; collapse everything else
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        expandedNodes = path
+                    }
+                    // Scroll to the deepest active node
+                    if let deepest = deepestActiveNode(in: vm.outlineNodes, path: path) {
+                        withAnimation {
+                            proxy.scrollTo(deepest, anchor: .center)
+                        }
+                    }
+                }
             }
-            .listStyle(.sidebar)
+        }
+    }
+
+    /// Walk the tree to find the deepest node whose ID is in the active path.
+    private func deepestActiveNode(in nodes: [OutlineNode], path: Set<UUID>) -> UUID? {
+        for node in nodes.reversed() {
+            guard path.contains(node.id) else { continue }
+            if let kids = node.children,
+               let deeper = deepestActiveNode(in: kids, path: path) {
+                return deeper
+            }
+            return node.id
+        }
+        return nil
+    }
+}
+
+/// Recursive outline node with controlled expansion.
+private struct OutlineNodeView: View {
+    @EnvironmentObject var vm: PDFViewModel
+    let node: OutlineNode
+    @Binding var expandedNodes: Set<UUID>
+    let activePath: Set<UUID>
+    var isTopLevel: Bool = false
+
+    private var isActive: Bool { activePath.contains(node.id) }
+
+    /// True when this node is in the active path and none of its children are.
+    private var isDeepestActive: Bool {
+        guard isActive else { return false }
+        guard let children = node.children else { return true }
+        return !children.contains { activePath.contains($0.id) }
+    }
+
+    var body: some View {
+        if let children = node.children, !children.isEmpty {
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expandedNodes.contains(node.id) },
+                    set: { isExpanded in
+                        if isExpanded {
+                            expandedNodes.insert(node.id)
+                        } else {
+                            expandedNodes.remove(node.id)
+                        }
+                    }
+                )
+            ) {
+                ForEach(children) { child in
+                    OutlineNodeView(node: child, expandedNodes: $expandedNodes, activePath: activePath, isTopLevel: false)
+                }
+            } label: {
+                OutlineRowView(node: node, isActive: isActive, isDeepestActive: isDeepestActive, isTopLevel: isTopLevel)
+            }
+            .id(node.id)
+        } else {
+            OutlineRowView(node: node, isActive: isActive, isDeepestActive: isDeepestActive, isTopLevel: isTopLevel)
+                .id(node.id)
         }
     }
 }
@@ -161,6 +231,9 @@ private struct VideoLibraryRow: View {
 struct OutlineRowView: View {
     @EnvironmentObject var vm: PDFViewModel
     let node: OutlineNode
+    var isActive: Bool = false
+    var isDeepestActive: Bool = false
+    var isTopLevel: Bool = false
     @State private var isHovered = false
 
     private var isEligibleForVideo: Bool {
@@ -171,26 +244,74 @@ struct OutlineRowView: View {
         vm.hasVideo(for: node.label)
     }
 
+    private var isGeneratingVideo: Bool {
+        vm.isGeneratingVideo(for: node.label)
+    }
+
+    private var hasExistingMindmap: Bool {
+        vm.hasMindmap(for: node.label)
+    }
+
     var body: some View {
         Button {
             vm.goToPage(node.pageIndex)
         } label: {
             HStack(spacing: 4) {
+                if isDeepestActive {
+                    Image(systemName: "arrowtriangle.right.fill")
+                        .font(.system(size: 7))
+                        .foregroundStyle(Color(.systemIndigo))
+                }
                 Text(node.label)
                     .font(.callout)
-                    .foregroundColor(vm.currentPageIndex == node.pageIndex ? .accentColor : .primary)
+                    .fontWeight(isActive ? .semibold : .regular)
+                    .foregroundStyle(isActive ? Color(.systemIndigo) : .primary)
                     .lineLimit(2)
                 Spacer()
-                if isEligibleForVideo {
+                if isTopLevel && isEligibleForVideo {
                     Button {
-                        vm.generateVideoOverview(for: node)
+                        vm.generateMindmap(for: node)
                     } label: {
-                        Image(systemName: hasExistingVideo ? "video.badge.checkmark" : "video.badge.waveform")
+                        Image(systemName: vm.mindmapGenerating.contains(node.label)
+                              ? "brain.head.profile.fill"
+                              : (hasExistingMindmap ? "brain.fill" : "brain"))
                             .font(.system(size: 10))
-                            .foregroundStyle(hasExistingVideo ? Color.green : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
+                            .foregroundStyle(
+                                vm.mindmapGenerating.contains(node.label)
+                                    ? Color(.systemIndigo).opacity(0.75)
+                                    : (hasExistingMindmap
+                                        ? Color(.systemIndigo).opacity(0.75)
+                                        : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
+                            )
+                            .symbolEffect(.pulse, isActive: vm.mindmapGenerating.contains(node.label))
                     }
                     .buttonStyle(.plain)
-                    .help(hasExistingVideo ? "Video ready: \"\(node.label)\"" : "Generate Video Overview for \"\(node.label)\"")
+                    .help(hasExistingMindmap ? "View mindmap: \"\(node.label)\"" : "Generate mindmap: \"\(node.label)\"")
+
+                    Button {
+                        if hasExistingVideo {
+                            vm.playingVideoURL = vm.videoURL(for: node.label)
+                        } else {
+                            vm.generateVideoOverview(for: node)
+                        }
+                    } label: {
+                        Image(systemName: isGeneratingVideo
+                              ? "video.badge.ellipsis"
+                              : (hasExistingVideo ? "video.badge.checkmark" : "video.badge.waveform"))
+                            .font(.system(size: 10))
+                            .foregroundStyle(
+                                isGeneratingVideo
+                                    ? Color(.systemTeal).opacity(0.8)
+                                    : (hasExistingVideo
+                                        ? Color(.systemTeal).opacity(0.8)
+                                        : (isHovered ? Color.accentColor : Color.secondary.opacity(0.5)))
+                            )
+                            .symbolEffect(.pulse, isActive: isGeneratingVideo)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isGeneratingVideo
+                          ? "Generating video..."
+                          : (hasExistingVideo ? "Watch: \"\(node.label)\"" : "Generate Video Overview for \"\(node.label)\""))
                 }
             }
         }
@@ -266,7 +387,7 @@ struct PageThumbnailView: View {
 
             Text(page.label ?? "\(index + 1)")
                 .font(.system(size: 9))
-                .foregroundColor(isSelected ? .accentColor : .secondary)
+                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
         }
         .task(id: index) {
             image = page.thumbnail(of: CGSize(width: 156, height: 208), for: .cropBox)
@@ -284,10 +405,10 @@ struct BookmarkSidebarView: View {
             VStack(spacing: 8) {
                 Image(systemName: "bookmark")
                     .font(.title2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
                 Text("No bookmarks yet.\nPress Cmd+B to add one.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -299,12 +420,12 @@ struct BookmarkSidebarView: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "bookmark.fill")
-                            .foregroundColor(.yellow)
+                            .foregroundStyle(.orange)
                             .font(.caption)
                         let label = vm.document?.page(at: pageIndex)?.label ?? "\(pageIndex + 1)"
                         Text("Page \(label)")
                             .font(.callout)
-                            .foregroundColor(vm.currentPageIndex == pageIndex ? .accentColor : .primary)
+                            .foregroundStyle(vm.currentPageIndex == pageIndex ? Color.accentColor : .primary)
                         Spacer()
                     }
                     .contentShape(Rectangle())

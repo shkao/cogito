@@ -80,11 +80,17 @@ class PDFViewModel: ObservableObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, !self.isEditingText, self.document != nil else { return event }
             switch event.keyCode {
-            case 124, 125:
+            case 125: // down arrow
                 Task { @MainActor [weak self] in self?.nextPage() }
                 return nil
-            case 123, 126:
+            case 126: // up arrow
                 Task { @MainActor [weak self] in self?.previousPage() }
+                return nil
+            case 124: // right arrow
+                Task { @MainActor [weak self] in self?.nextChapter() }
+                return nil
+            case 123: // left arrow
+                Task { @MainActor [weak self] in self?.previousChapter() }
                 return nil
             default:
                 return event
@@ -140,6 +146,17 @@ class PDFViewModel: ObservableObject {
     @Published var videoJobs: [VideoJob] = []
     @Published var isInferringOutline: Bool = false
     @Published var playingVideoURL: URL?
+
+    // MARK: Mindmap
+
+    struct MindmapDisplay {
+        let title: String
+        let root: MindmapNode
+    }
+
+    @Published var displayingMindmap: MindmapDisplay?
+    @Published var mindmapGenerating: Set<String> = []
+    private var mindmapTasks: [String: Task<Void, Never>] = [:]
 
     @Published var videoFormat: VideoFormat = VideoFormat(rawValue: UserDefaults.standard.string(forKey: "videoFormat") ?? "") ?? .explainer {
         didSet { UserDefaults.standard.set(videoFormat.rawValue, forKey: "videoFormat") }
@@ -226,6 +243,10 @@ class PDFViewModel: ObservableObject {
             if let pdf = job.chapterPDF { try? FileManager.default.removeItem(at: pdf) }
         }
         videoJobs.removeAll()
+        for (_, task) in mindmapTasks { task.cancel() }
+        mindmapTasks.removeAll()
+        mindmapGenerating.removeAll()
+        displayingMindmap = nil
         clearTranslation()
 
         cropMarginsVisually(in: doc)
@@ -251,15 +272,7 @@ class PDFViewModel: ObservableObject {
             let label = child.label ?? ""
             let pageIndex: Int = {
                 guard let dest = child.destination, let page = dest.page else { return 0 }
-                let idx = document.index(for: page)
-                let y = dest.point.y
-                // PDFs (e.g. Packt) sometimes encode chapter destinations with
-                // kPDFDestinationUnspecifiedValue as Y, pointing to the page just
-                // before the chapter. Add 1 to land on the actual chapter start page.
-                if y >= CGFloat(Float.greatestFiniteMagnitude) * 0.5 {
-                    return min(idx + 1, document.pageCount - 1)
-                }
-                return idx
+                return document.index(for: page)
             }()
             let page = document.page(at: pageIndex)
             let pageLabel = page?.label ?? "\(pageIndex + 1)"
@@ -319,6 +332,16 @@ class PDFViewModel: ObservableObject {
         saveReadingProgress()
     }
 
+    func nextChapter() {
+        guard let node = outlineNodes.first(where: { $0.pageIndex > currentPageIndex }) else { return }
+        goToPage(node.pageIndex)
+    }
+
+    func previousChapter() {
+        guard let node = outlineNodes.last(where: { $0.pageIndex < currentPageIndex }) else { return }
+        goToPage(node.pageIndex)
+    }
+
     // MARK: Reading Progress
 
     private func saveReadingProgress() {
@@ -337,6 +360,27 @@ class PDFViewModel: ObservableObject {
         guard let page = pendingPageRestore else { return }
         pendingPageRestore = nil
         goToPage(page)
+    }
+
+    /// Override the pending page restore (e.g. from CLI --page or --chapter).
+    /// Must be called after open() and before the view applies the restore.
+    func overridePendingRestore(to pageIndex: Int) {
+        pendingPageRestore = pageIndex
+    }
+
+    /// Returns the left and right page indices for the currently visible two-page spread.
+    /// In book mode, page 0 is alone; subsequent pairs are (1,2), (3,4), ...
+    /// In regular two-page mode, pairs are (0,1), (2,3), ...
+    var spreadPages: (left: Int, right: Int) {
+        let idx = currentPageIndex
+        if displaysAsBook {
+            if idx == 0 { return (0, 0) }
+            let left = idx % 2 == 1 ? idx : idx - 1
+            return (left, min(left + 1, totalPages - 1))
+        } else {
+            let left = idx % 2 == 0 ? idx : max(0, idx - 1)
+            return (left, min(left + 1, totalPages - 1))
+        }
     }
 
     private var pageStep: Int { displayMode.isTwoPage ? 2 : 1 }
@@ -443,6 +487,24 @@ class PDFViewModel: ObservableObject {
     var canGoBack: Bool { currentPageIndex > 0 }
     var canGoForward: Bool { currentPageIndex < totalPages - 1 }
 
+    // MARK: Active outline path
+
+    /// Returns the IDs of outline nodes from root to the deepest node containing `pageIndex`.
+    /// Used to auto-expand and highlight the current position in the TOC.
+    func activeOutlinePath(for pageIndex: Int) -> Set<UUID> {
+        var result = Set<UUID>()
+        func walk(_ nodes: [OutlineNode]) {
+            // Find the last node whose pageIndex <= current page
+            guard let match = nodes.last(where: { $0.pageIndex <= pageIndex }) else { return }
+            result.insert(match.id)
+            if let kids = match.children, !kids.isEmpty {
+                walk(kids)
+            }
+        }
+        walk(outlineNodes)
+        return result
+    }
+
     // MARK: Chapter page range
 
     /// Returns the top-level outline node whose start page matches `pageIndex`, if any.
@@ -451,11 +513,19 @@ class PDFViewModel: ObservableObject {
     }
 
     func chapterPageRange(for node: OutlineNode) -> Range<Int> {
-        guard let idx = outlineNodes.firstIndex(where: { $0.id == node.id }) else {
-            return node.pageIndex..<totalPages
+        func searchSiblings(_ siblings: [OutlineNode]) -> Range<Int>? {
+            guard let idx = siblings.firstIndex(where: { $0.id == node.id }) else {
+                for sibling in siblings {
+                    if let found = sibling.children.flatMap({ searchSiblings($0) }) {
+                        return found
+                    }
+                }
+                return nil
+            }
+            let end = idx + 1 < siblings.count ? siblings[idx + 1].pageIndex : totalPages
+            return node.pageIndex..<max(node.pageIndex, end)
         }
-        let end = idx + 1 < outlineNodes.count ? outlineNodes[idx + 1].pageIndex : totalPages
-        return node.pageIndex..<end
+        return searchSiblings(outlineNodes) ?? (node.pageIndex..<node.pageIndex)
     }
 
     // MARK: Extract chapter pages into a temp PDF
@@ -480,13 +550,15 @@ class PDFViewModel: ObservableObject {
 
     // MARK: Video generation
 
-    private func videoOutputDir() -> URL {
+    private func cacheSubdir(_ name: String) -> URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        let dir = caches.appendingPathComponent("com.cogito.app/Videos", isDirectory: true)
+        let dir = caches.appendingPathComponent("com.cogito.app/\(name)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
+
+    private func videoOutputDir() -> URL { cacheSubdir("Videos") }
 
     private var bookHash: String {
         // NSString.hash is stable across process launches (unlike Swift's hashValue,
@@ -502,6 +574,11 @@ class PDFViewModel: ObservableObject {
     func hasVideo(for title: String) -> Bool {
         let target = sanitizeTitle(title)
         return cachedVideos.contains { videoTitle(from: $0) == target }
+    }
+
+    func videoURL(for title: String) -> URL? {
+        let target = sanitizeTitle(title)
+        return cachedVideos.first { videoTitle(from: $0) == target }
     }
 
     func videoTitle(from url: URL) -> String {
@@ -592,7 +669,7 @@ class PDFViewModel: ObservableObject {
         )) ?? []
         cachedVideos = files
             .filter { $0.pathExtension == "mp4" && $0.lastPathComponent.contains("_\(hash)") }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
     func deleteCachedVideo(at url: URL) {
@@ -774,5 +851,103 @@ class PDFViewModel: ObservableObject {
               let end = response.range(of: "]", options: .backwards),
               start.lowerBound <= end.lowerBound else { return nil }
         return String(response[start.lowerBound..<end.upperBound])
+    }
+
+    // MARK: - Mindmap Generation
+
+    func generateMindmap(for node: OutlineNode) {
+        let title = node.label
+        if mindmapGenerating.contains(title) { return }
+
+        if let cached = loadCachedMindmap(for: title) {
+            displayingMindmap = MindmapDisplay(title: title, root: cached)
+            return
+        }
+
+        guard let doc = document else { return }
+        mindmapGenerating.insert(title)
+
+        let range = chapterPageRange(for: node)
+        let task = Task {
+            defer {
+                mindmapGenerating.remove(title)
+                mindmapTasks[title] = nil
+            }
+
+            let text = PDFTextExtractor.text(from: doc, pages: range)
+            let truncated = String(text.prefix(4000))
+
+            let prompt = """
+            Create a mind map from this chapter. Return ONLY valid JSON, no other text.
+
+            Format: {"title":"Topic","children":[{"title":"Branch","children":[{"title":"Leaf"}]}]}
+
+            Rules:
+            - Root title: the chapter's main topic in 3-6 words
+            - 4-7 first-level branches for key concepts
+            - 2-4 leaves per branch for important details
+            - Maximum 3 levels deep
+            - Each title: 2-6 words, no full sentences
+
+            Chapter:
+            \(truncated)
+            """
+
+            var response = ""
+            do {
+                let stream = await LLMService.shared.generate(
+                    prompt: prompt,
+                    systemPrompt: "You create mind maps from text. Return ONLY a valid JSON object, no other text.",
+                    maxTokens: 1024
+                )
+                for try await token in stream {
+                    if Task.isCancelled { return }
+                    response += token
+                }
+            } catch {
+                return
+            }
+
+            guard let mindmap = parseMindmapJSON(response) else { return }
+            saveMindmapToCache(mindmap, for: title)
+            displayingMindmap = MindmapDisplay(title: title, root: mindmap)
+        }
+        mindmapTasks[title] = task
+    }
+
+    func hasMindmap(for title: String) -> Bool {
+        FileManager.default.fileExists(atPath: mindmapPath(for: title).path)
+    }
+
+    func deleteMindmap(for title: String) {
+        try? FileManager.default.removeItem(at: mindmapPath(for: title))
+    }
+
+    private func parseMindmapJSON(_ response: String) -> MindmapNode? {
+        guard let start = response.range(of: "{"),
+              let end = response.range(of: "}", options: .backwards),
+              start.lowerBound <= end.lowerBound else { return nil }
+        let jsonStr = String(response[start.lowerBound..<end.upperBound])
+        guard let data = jsonStr.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(MindmapNode.self, from: data)
+    }
+
+    private func mindmapOutputDir() -> URL { cacheSubdir("Mindmaps") }
+
+    private func mindmapPath(for title: String) -> URL {
+        let safe = sanitizeTitle(title)
+        return mindmapOutputDir().appendingPathComponent("\(safe)_\(bookHash).json")
+    }
+
+    private func loadCachedMindmap(for title: String) -> MindmapNode? {
+        let path = mindmapPath(for: title)
+        guard let data = try? Data(contentsOf: path) else { return nil }
+        return try? JSONDecoder().decode(MindmapNode.self, from: data)
+    }
+
+    private func saveMindmapToCache(_ node: MindmapNode, for title: String) {
+        let path = mindmapPath(for: title)
+        guard let data = try? JSONEncoder().encode(node) else { return }
+        try? data.write(to: path)
     }
 }

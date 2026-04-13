@@ -48,6 +48,7 @@ private struct VideoJobRow: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(status.isError ? status.statusText : "")
             }
 
             Spacer()

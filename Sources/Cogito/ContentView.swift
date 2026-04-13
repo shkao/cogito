@@ -7,12 +7,13 @@ struct ContentView: View {
     @State private var isDroppingFile = false
     @State private var showingSettings = false
     @State private var showSidebar = true
+    @State private var videoConfirmNode: OutlineNode?
 
     var body: some View {
         HStack(spacing: 0) {
             if showSidebar {
                 SidebarView()
-                    .frame(width: 240)
+                    .frame(width: 300)
                     .background(.background)
                 Divider()
             }
@@ -20,18 +21,21 @@ struct ContentView: View {
             ZStack {
                 if vm.document != nil {
                     if vm.displayMode == .twoPage {
+                        let pages = vm.spreadPages
                         HStack(spacing: 0) {
-                            CornellNoteView(pageIndex: vm.currentPageIndex)
+                            CornellNoteView(pageIndex: pages.left)
                                 .frame(width: 48)
                             PDFReaderView()
-                            if vm.currentPageIndex + 1 < vm.totalPages {
-                                CornellNoteView(pageIndex: vm.currentPageIndex + 1)
+                            if pages.right != pages.left, pages.right < vm.totalPages {
+                                CornellNoteView(pageIndex: pages.right)
                                     .frame(width: 48)
                             }
                         }
                     } else {
                         PDFReaderView()
                     }
+
+                    chapterVideoOverlay()
 
                     if vm.isSearchBarVisible {
                         VStack {
@@ -99,6 +103,18 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: vm.playingVideoURL == nil)
+        .overlay {
+            if let mindmap = vm.displayingMindmap {
+                MindmapOverlayView(
+                    root: mindmap.root,
+                    chapterTitle: mindmap.title
+                ) {
+                    vm.displayingMindmap = nil
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: vm.displayingMindmap?.title)
     }
 
     // MARK: - Toolbar
@@ -170,7 +186,7 @@ struct ContentView: View {
 
             Button { vm.toggleBookmark() } label: {
                 Image(systemName: vm.isCurrentPageBookmarked ? "bookmark.fill" : "bookmark")
-                    .foregroundColor(vm.isCurrentPageBookmarked ? .yellow : .primary)
+                    .foregroundStyle(vm.isCurrentPageBookmarked ? Color.orange : .primary)
             }
             .help(vm.isCurrentPageBookmarked ? "Remove Bookmark (Cmd+B)" : "Add Bookmark (Cmd+B)")
             .keyboardShortcut("b", modifiers: .command)
@@ -190,6 +206,79 @@ struct ContentView: View {
                     .environmentObject(vm)
             }
         }
+    }
+
+    // MARK: - Chapter Video Overlay
+
+    @ViewBuilder
+    private func chapterVideoOverlay() -> some View {
+        let pages = vm.displayMode.isTwoPage ? vm.spreadPages : (left: vm.currentPageIndex, right: vm.currentPageIndex)
+        let leftNode = vm.chapterNode(at: pages.left)
+        let rightNode: OutlineNode? = {
+            guard pages.right != pages.left, pages.right < vm.totalPages else { return nil }
+            return vm.chapterNode(at: pages.right)
+        }()
+
+        if let node = leftNode ?? rightNode {
+            VStack {
+                Spacer()
+                chapterVideoButton(node: node)
+                    .padding(.bottom, 16)
+            }
+            .allowsHitTesting(true)
+            .alert("Generate Video",
+                   isPresented: Binding(
+                       get: { videoConfirmNode != nil },
+                       set: { if !$0 { videoConfirmNode = nil } }
+                   )) {
+                Button("Cancel", role: .cancel) { videoConfirmNode = nil }
+                Button("Generate") {
+                    if let node = videoConfirmNode {
+                        vm.generateVideoOverview(for: node)
+                        videoConfirmNode = nil
+                    }
+                }
+            } message: {
+                if let node = videoConfirmNode {
+                    Text("Generate a video overview for \"\(node.label)\"?")
+                }
+            }
+        }
+    }
+
+    private func chapterVideoButton(node: OutlineNode) -> some View {
+        let hasVideo = vm.hasVideo(for: node.label)
+        let isGenerating = vm.isGeneratingVideo(for: node.label)
+
+        return Button {
+            if hasVideo, let url = vm.videoURL(for: node.label) {
+                vm.playingVideoURL = url
+            } else if !isGenerating {
+                videoConfirmNode = node
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if isGenerating {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: hasVideo ? "play.circle.fill" : "video.badge.waveform")
+                        .font(.system(size: 14))
+                }
+                Text(hasVideo ? "Watch" : "Video")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+        }
+        .buttonStyle(.plain)
+        .help(hasVideo ? "Watch: \(node.label)" : "Generate Video: \(node.label)")
     }
 
     // MARK: - Drop
@@ -235,15 +324,16 @@ struct DropZoneView: View {
         VStack(spacing: 16) {
             Image(systemName: "doc.text")
                 .font(.system(size: 52))
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
                 .symbolEffect(.pulse, isActive: isHovering)
 
             Text("Open a PDF to start reading")
                 .font(.title3)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
             Button("Choose File...") { openFile() }
                 .keyboardShortcut("o", modifiers: .command)
+                .buttonStyle(.borderedProminent)
                 .controlSize(.large)
 
             Text("or drag and drop a PDF here")
@@ -265,7 +355,7 @@ struct SearchBarView: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
                 .font(.callout)
 
             TextField("Search in document...", text: $vm.searchQuery)
@@ -277,7 +367,7 @@ struct SearchBarView: View {
             if !vm.searchResults.isEmpty {
                 Text("\(vm.currentSearchIndex + 1) / \(vm.searchResults.count)")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
                     .monospacedDigit()
 
                 Button { vm.previousSearchResult() } label: {
@@ -294,12 +384,12 @@ struct SearchBarView: View {
             } else if !vm.searchQuery.isEmpty {
                 Text("No results")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
             }
 
             Button { vm.clearSearch() } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Close Search (Esc)")
@@ -320,31 +410,16 @@ struct DisplayModePicker: View {
     @EnvironmentObject var vm: PDFViewModel
 
     var body: some View {
-        HStack(spacing: 0) {
+        Picker("Display Mode", selection: $vm.displayMode) {
             ForEach(DisplayMode.allCases) { mode in
-                Button {
-                    vm.displayMode = mode
-                } label: {
-                    Image(systemName: mode.icon)
-                        .frame(width: 28, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(
-                    vm.displayMode == mode
-                        ? Color.primary.opacity(0.15)
-                        : Color.clear
-                )
-                .help(mode.label)
+                Image(systemName: mode.icon)
+                    .tag(mode)
+                    .accessibilityLabel(mode.label)
             }
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 0.5)
-        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 80)
     }
 }
 
@@ -358,11 +433,13 @@ struct PageIndicatorView: View {
 
     private var spread: String {
         guard vm.totalPages > 0 else { return "" }
-        let p = vm.currentPageIndex + 1
-        if vm.displayMode.isTwoPage, p < vm.totalPages {
-            return "\(p)–\(p + 1)"
+        if vm.displayMode.isTwoPage {
+            let pages = vm.spreadPages
+            if pages.left != pages.right {
+                return "\(pages.left + 1)–\(pages.right + 1)"
+            }
         }
-        return "\(p)"
+        return "\(vm.currentPageIndex + 1)"
     }
 
     private var pct: Int {
