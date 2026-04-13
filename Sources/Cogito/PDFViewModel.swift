@@ -1173,7 +1173,11 @@ class PDFViewModel: ObservableObject {
             do {
                 let stream = await LLMService.shared.generate(
                     prompt: prompt,
-                    systemPrompt: "You answer questions prioritizing provided book excerpts. Quote the book's language when possible, and add brief clarifications only when needed for clarity. Use unicode math symbols (μ, σ, σ², x̂, θ, α, β, ε, λ, π) instead of writing out Greek letter names or LaTeX.",
+                    systemPrompt: "You answer questions prioritizing provided book excerpts. "
+                        + "Quote the book's language when possible, and add brief clarifications "
+                        + "only when needed for clarity. Use unicode math symbols "
+                        + "(μ, σ, σ², x̂, θ, α, β, ε, λ, π) instead of writing out "
+                        + "Greek letter names or LaTeX.",
                     maxTokens: 450
                 )
                 for try await token in stream {
