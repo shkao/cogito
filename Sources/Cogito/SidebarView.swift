@@ -237,7 +237,7 @@ struct OutlineRowView: View {
     @State private var isHovered = false
 
     private var isEligibleForVideo: Bool {
-        vm.chapterPageRange(for: node).count >= 5
+        vm.isContentChapter(node)
     }
 
     private var hasExistingVideo: Bool {

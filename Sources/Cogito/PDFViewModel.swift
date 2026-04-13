@@ -507,9 +507,23 @@ class PDFViewModel: ObservableObject {
 
     // MARK: Chapter page range
 
+    private static let frontMatterLabels: Set<String> = [
+        "preface", "foreword", "acknowledgments", "acknowledgements",
+        "about the author", "about the authors", "dedication",
+        "table of contents", "contents", "introduction",
+    ]
+
+    /// True when the chapter has enough content for video/mindmap generation
+    /// and is not front matter (preface, foreword, etc.).
+    func isContentChapter(_ node: OutlineNode) -> Bool {
+        let lower = node.label.trimmingCharacters(in: .whitespaces).lowercased()
+        if Self.frontMatterLabels.contains(lower) { return false }
+        return chapterPageRange(for: node).count >= 5
+    }
+
     /// Returns the top-level outline node whose start page matches `pageIndex`, if any.
     func chapterNode(at pageIndex: Int) -> OutlineNode? {
-        outlineNodes.first { $0.pageIndex == pageIndex && chapterPageRange(for: $0).count >= 5 }
+        outlineNodes.first { $0.pageIndex == pageIndex && isContentChapter($0) }
     }
 
     func chapterPageRange(for node: OutlineNode) -> Range<Int> {
