@@ -124,7 +124,11 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
     except ImportError:
         import subprocess
         emit({"status": STATUS_UPLOADING, "message": "Installing notebooklm-py..."})
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "notebooklm-py"])
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "notebooklm-py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         from notebooklm import NotebookLMClient
         from notebooklm.exceptions import ArtifactNotReadyError
         from notebooklm.types import VideoFormat, VideoStyle
@@ -139,28 +143,56 @@ async def run(pdf_path: str, output_path: str, title: str, fmt: str = "explainer
 
     try:
         async with await NotebookLMClient.from_storage() as client:
-            # Check for an existing notebook with a completed video before creating a new one.
+            # Check for an existing notebook before creating a new one.
+            # 1. Completed video → download and return
+            # 2. In-progress video → join its poll loop (no duplicate)
+            # 3. No matching notebook → create new one
             emit({"status": STATUS_UPLOADING, "message": "Checking for existing video..."})
+            existing_nb = None
             try:
                 notebooks = await client.notebooks.list()
                 for nb in notebooks:
-                    if nb.title != title:
-                        continue
-                    videos = await client.artifacts.list_video(nb.id)
-                    completed = [v for v in videos if v.is_completed]
-                    if not completed:
-                        continue
-                    # Found a completed video — download it.
+                    if nb.title == title:
+                        existing_nb = nb
+                        break
+            except Exception:
+                pass
+
+            if existing_nb:
+                nid = existing_nb.id
+                try:
+                    videos = await client.artifacts.list_video(nid)
+                except Exception:
+                    videos = []
+
+                completed = [v for v in videos if v.is_completed]
+                if completed:
                     emit({"status": STATUS_DOWNLOADING, "message": "Downloading existing video..."})
-                    if await try_download(client, nb.id, completed[0].id, out_path):
+                    if await try_download(client, nid, completed[0].id, out_path):
                         emit({"status": STATUS_DONE, "path": str(out_path)})
                         return
-            except Exception:
-                pass  # If listing fails, fall through to create a new notebook.
 
-            emit({"status": STATUS_UPLOADING, "message": f'Creating notebook "{title}"...'})
-            notebook = await client.notebooks.create(title=title)
-            nid = notebook.id
+                in_progress = [v for v in videos if not v.is_completed]
+                if in_progress:
+                    # Video is already generating: join the poll loop.
+                    task_id = in_progress[0].id
+                    emit({"status": STATUS_POLLING, "elapsed": 0, "message": "Video already generating, waiting..."})
+                    start = time.monotonic()
+                    while True:
+                        await asyncio.sleep(30)
+                        elapsed = int(time.monotonic() - start)
+                        mins, secs = divmod(elapsed, 60)
+                        elapsed_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                        emit({"status": STATUS_DOWNLOADING, "message": "Checking if video is ready..."})
+                        if await try_download(client, nid, task_id, out_path):
+                            emit({"status": STATUS_DONE, "path": str(out_path)})
+                            return
+                        emit({"status": STATUS_POLLING, "elapsed": elapsed, "message": f"Generating... ({elapsed_str} elapsed)"})
+            else:
+                # No existing notebook: create one and upload sources.
+                emit({"status": STATUS_UPLOADING, "message": f'Creating notebook "{title}"...'})
+                notebook = await client.notebooks.create(title=title)
+                nid = notebook.id
 
             emit({"status": STATUS_UPLOADING, "message": "Uploading chapter PDF..."})
             source = await client.sources.add_file(

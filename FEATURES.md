@@ -57,3 +57,19 @@ Textbook figures are static. A reader encounters a diagram of a neural network o
 The idea: a button near a figure lets the reader animate it. Click it, and the figure comes alive in place. The static image becomes an animation that walks through the concept step by step, in place, with no separate window.
 
 Each step highlights a region, shows flow between elements, and pairs with a short explanation. The reader controls the pace: play, pause, step forward, step back, reset. When done, the original figure returns and they keep reading.
+
+## Executable Code Blocks
+
+Textbook code is dead on arrival. A reader encounters a k-means implementation in Chapter 10 and has to switch to a terminal, re-type or copy-paste the snippet, install the right packages, fix the inevitable extraction errors, and run it. Most readers skip this entirely. The code becomes decoration.
+
+The idea: detect code blocks in the PDF and present them as editable, runnable cells in a panel beside the page. The reader sees the textbook on the left and the extracted code on the right, ready to execute. Click Run, see the output. Change a parameter, run again. The loop between reading and doing shrinks to zero.
+
+This sits squarely at Reasoning. A translation tells you what a word means. An animation shows you how a process works. Running code forces you to predict what will happen, observe what actually happens, and reconcile the difference. That predict-observe-reconcile cycle is where understanding forms.
+
+The panel appears on demand (Cmd+K). The reader triggers detection deliberately, consistent with the ownership principle from Joshi and Vogel. No code cells appear until the reader asks for them. The panel shows cells for the current chapter; switching chapters clears the workspace and starts fresh, because textbook chapters are self-contained units.
+
+Cells share a persistent Python session within a chapter. Run `X = load_data()` in cell 1, then `model.fit(X)` in cell 3, and it works. This matches how textbook code builds incrementally. Matplotlib plots render inline as images below the cell that produced them.
+
+Detection uses heuristic pattern matching on the raw PDF text: `>>>` prompts, `import` statements, `def`/`class` declarations, indented blocks. For ambiguous cases, the local LLM classifies whether a text region is code. The reader can also add blank cells and write their own code, turning the panel into a scratch pad for experimentation alongside the reading.
+
+The kernel runs as a local Python subprocess with stdin/stdout JSON messaging, following the same process-spawning pattern used for video generation. No remote server, no network dependency, no Jupyter installation required. The reader's existing Python environment (numpy, pandas, sklearn, matplotlib) is all that's needed.

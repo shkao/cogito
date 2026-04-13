@@ -38,12 +38,23 @@ bundle: deps build
   <key>LSMinimumSystemVersion</key><string>14.0</string>\n\
   <key>NSHighResolutionCapable</key><true/>\n\
   <key>NSPrincipalClass</key><string>NSApplication</string>\n\
+  <key>CFBundleDocumentTypes</key>\n\
+  <array><dict>\n\
+    <key>CFBundleTypeRole</key><string>Viewer</string>\n\
+    <key>LSHandlerRank</key><string>Alternate</string>\n\
+    <key>LSItemContentTypes</key>\n\
+    <array><string>com.adobe.pdf</string></array>\n\
+  </dict></array>\n\
 </dict></plist>\n' > $(PLIST)
 
 run: bundle
 	codesign --force --deep --sign - $(APP)
 	pkill -x Cogito 2>/dev/null || true
+ifdef PDF
+	$(MACOS)/Cogito '$(PDF)' $(if $(PAGE),--page $(PAGE)) $(if $(CHAPTER),--chapter '$(CHAPTER)')
+else
 	open $(APP)
+endif
 
 clean:
 	rm -rf $(APP) .build
