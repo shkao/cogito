@@ -42,6 +42,16 @@ Sarkar names three design principles: preserve material engagement, offer produc
 
 — Sarkar, A. (2025). Artificial Intelligence as a Tool for Thought. TEDAI Vienna. https://www.microsoft.com/en-us/research/wp-content/uploads/2025/11/TEDAI_2025_AI_as_Tool_for_Thought_V1.pdf
 
+## Ask Question (RAG)
+
+Full-text search (Cmd+F) finds exact strings. It fails when the reader has a concept in mind but not the exact wording the author used. "What is VAE?" returns nothing if the chapter says "variational autoencoder" but never abbreviates it.
+
+Ask Question (Cmd+J) uses retrieval-augmented generation. On PDF open, every page is indexed. When the reader asks a question, BM25-lite keyword matching retrieves the top pages instantly (no LLM). The app navigates to the best page and highlights the defining mention of the query term. Then one LLM call generates a self-contained answer from the retrieved passages, streamed token-by-token into the question bar.
+
+For "What is X?" questions, the prompt automatically expands to request ELI12-style explanations with concrete analogies. A closing metaphor in the reader's target language (configurable in Settings) reinforces the concept using everyday objects. LaTeX in the LLM output is post-processed to unicode (σ², μ, x̂).
+
+This sits between Decoding and Comprehension. The reader still has to engage with the material once they arrive. The feature removes the friction of finding where to look, not the work of understanding what's there.
+
 ## Chapter Progress Bar
 
 Reading a paper is easier when you know where you are in its argument. The introduction, methods, results, and discussion ask different things from the reader. Losing track of structure is one reason readers drift into passive scanning.

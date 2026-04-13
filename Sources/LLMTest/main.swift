@@ -1,19 +1,22 @@
 import Foundation
+import HFAPI
+import MLXBridge
 import MLXLLM
 import MLXLMCommon
 
 let task = Task {
     print("=== Cogito LLM Speed Benchmark ===\n")
 
-    let config = LLMRegistry.gemma3n_E4B_it_lm_4bit
+    let config = LLMRegistry.gemma4_e4b_it_4bit
     print("Model : \(config.name)")
     print("Device: Apple Silicon (MLX Metal)\n")
 
-    // Load model
     print("Loading model...")
     let container: ModelContainer
     do {
         container = try await LLMModelFactory.shared.loadContainer(
+            from: HubClient.default,
+            using: TokenizersLoader(),
             configuration: config
         ) { _ in }
         print("Model loaded.\n")
@@ -22,14 +25,9 @@ let task = Task {
         return
     }
 
-    // Benchmark helper
     func bench(label: String, prompt: String, maxTokens: Int, systemPrompt: String? = nil) async {
         let params = GenerateParameters(maxTokens: maxTokens)
-        let session = ChatSession(
-            container,
-            instructions: systemPrompt,
-            generateParameters: params
-        )
+        let session = ChatSession(container, instructions: systemPrompt, generateParameters: params)
 
         print("[\(label)]")
         print("  Prompt (\(prompt.count) chars): \"\(prompt.prefix(60))\(prompt.count > 60 ? "..." : "")\"")

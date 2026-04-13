@@ -57,24 +57,38 @@ enum VideoStatus: Sendable {
 
 enum VideoFormat: String, CaseIterable, Identifiable {
     case explainer
-    case deepDive = "deep_dive"
+    case brief
+    case cinematic
     var id: String { rawValue }
     var label: String {
         switch self {
         case .explainer: return "Explainer"
-        case .deepDive: return "Deep Dive"
+        case .brief: return "Brief"
+        case .cinematic: return "Cinematic"
         }
     }
 }
 
 enum VideoStyle: String, CaseIterable, Identifiable {
     case whiteboard
-    case slideshow
+    case classic
+    case kawaii
+    case anime
+    case watercolor
+    case retroPrint = "retro_print"
+    case heritage
+    case paperCraft = "paper_craft"
     var id: String { rawValue }
     var label: String {
         switch self {
         case .whiteboard: return "Whiteboard"
-        case .slideshow: return "Slideshow"
+        case .classic: return "Classic"
+        case .kawaii: return "Kawaii"
+        case .anime: return "Anime"
+        case .watercolor: return "Watercolor"
+        case .retroPrint: return "Retro Print"
+        case .heritage: return "Heritage"
+        case .paperCraft: return "Paper Craft"
         }
     }
 }

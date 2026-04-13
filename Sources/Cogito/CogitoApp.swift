@@ -98,6 +98,9 @@ struct CogitoApp: App {
                     .keyboardShortcut(.home, modifiers: .command)
                 Button("Last Page") { vm.goToPage(vm.totalPages - 1) }
                     .keyboardShortcut(.end, modifiers: .command)
+                Divider()
+                Button("Ask Question") { vm.isAskBarVisible.toggle() }
+                    .keyboardShortcut("j", modifiers: .command)
             }
             CommandMenu("View") {
                 ForEach(DisplayMode.allCases) { mode in

@@ -1,10 +1,12 @@
 import Foundation
+import HFAPI
+import MLXBridge
 import MLXLLM
 import MLXLMCommon
 
 // MARK: - LLMService
 
-/// Thread-safe, singleton LLM engine. Loads Gemma 3n E4B (4-bit) locally
+/// Thread-safe, singleton LLM engine. Loads Gemma 4 E4B (4-bit) locally
 /// via MLX on Apple Silicon. All state transitions run on this actor.
 actor LLMService {
     static let shared = LLMService()
@@ -20,7 +22,9 @@ actor LLMService {
     private var container: ModelContainer?
     private var loadingTask: Task<ModelContainer, Error>?
 
-    private static let configuration = LLMRegistry.gemma3n_E4B_it_lm_4bit
+    static let configuration = LLMRegistry.gemma4_e4b_it_4bit
+
+    var modelName: String { Self.configuration.name }
 
     private init() {}
 
@@ -37,6 +41,8 @@ actor LLMService {
 
         let task = Task<ModelContainer, Error> {
             try await LLMModelFactory.shared.loadContainer(
+                from: HubClient.default,
+                using: TokenizersLoader(),
                 configuration: Self.configuration
             ) { [weak self] progress in
                 let fraction = progress.fractionCompleted

@@ -46,6 +46,15 @@ struct ContentView: View {
                         }
                     }
 
+                    if vm.isAskBarVisible {
+                        VStack {
+                            AskBarView()
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .padding(.top, 4)
+                            Spacer()
+                        }
+                    }
+
                     if !vm.videoJobs.isEmpty {
                         VStack {
                             Spacer()
@@ -80,6 +89,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.easeInOut(duration: 0.18), value: vm.isSearchBarVisible)
+            .animation(.easeInOut(duration: 0.18), value: vm.isAskBarVisible)
             .animation(.easeInOut(duration: 0.2), value: vm.videoJobs.isEmpty)
             .onDrop(of: [UTType.pdf, UTType.fileURL], isTargeted: $isDroppingFile) { providers in
                 loadDroppedPDF(from: providers)
@@ -151,8 +161,6 @@ struct ContentView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             DisplayModePicker()
 
-            Divider()
-
             Button { vm.zoomOut() } label: {
                 Image(systemName: "minus.magnifyingglass")
             }
@@ -168,8 +176,6 @@ struct ContentView: View {
             }
             .help("Zoom In (Cmd+=)")
 
-            Divider()
-
             Button { vm.openFilePicker() } label: {
                 Image(systemName: "folder")
             }
@@ -183,6 +189,16 @@ struct ContentView: View {
             }
             .help("Search (Cmd+F)")
             .keyboardShortcut("f", modifiers: .command)
+
+            Button {
+                withAnimation { vm.isAskBarVisible.toggle() }
+                if !vm.isAskBarVisible { vm.clearAsk() }
+            } label: {
+                Image(systemName: "questionmark.bubble")
+            }
+            .help("Ask Question (Cmd+J)")
+            .keyboardShortcut("j", modifiers: .command)
+            .disabled(vm.outlineNodes.isEmpty)
 
             Button { vm.toggleBookmark() } label: {
                 Image(systemName: vm.isCurrentPageBookmarked ? "bookmark.fill" : "bookmark")
@@ -202,7 +218,7 @@ struct ContentView: View {
             }
             .help("Settings")
             .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
-                NotebookLMSettingsView()
+                SettingsView()
                     .environmentObject(vm)
             }
         }
@@ -404,6 +420,85 @@ struct SearchBarView: View {
     }
 }
 
+// MARK: - Ask Bar
+
+struct AskBarView: View {
+    @EnvironmentObject var vm: PDFViewModel
+    @FocusState private var isFocused: Bool
+    @State private var isCloseHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.bubble")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 20, alignment: .center)
+
+                TextField("Ask about this book...", text: $vm.askQuery)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .frame(width: 200)
+                    .focused($isFocused)
+                    .onChange(of: isFocused) { _, focused in vm.isEditingText = focused }
+                    .onSubmit { vm.askQuestion() }
+                    .disabled(vm.isAskingQuestion)
+
+                if vm.isAskingQuestion {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Spacer()
+
+                Button { vm.clearAsk() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(isCloseHovered ? .primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .onHover { isCloseHovered = $0 }
+                .help("Close (Esc)")
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityLabel("Close question bar")
+            }
+
+            if let answer = vm.askAnswer, !answer.isEmpty {
+                Divider()
+                    .overlay(Color.primary.opacity(0.25))
+                    .padding(.horizontal, 4)
+
+                let rendered: AttributedString = {
+                    if let md = try? AttributedString(markdown: answer,
+                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+                        return md
+                    }
+                    return AttributedString(answer)
+                }()
+                Text(rendered)
+                    .font(.callout)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.1), radius: 8, y: 3)
+        .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
+        .frame(maxWidth: 580)
+        .padding(.horizontal, 40)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                isFocused = true
+            }
+        }
+    }
+}
+
 // MARK: - Display Mode Picker (segmented style with per-button tooltips)
 
 struct DisplayModePicker: View {
@@ -507,11 +602,9 @@ struct TranslationCardView: View {
     @EnvironmentObject var vm: PDFViewModel
     @State private var showingLangPicker = false
 
-    private let langs: [(code: String, label: String)] = [
-        ("zh", "中文"), ("ja", "日本語"), ("es", "Español"),
-        ("fr", "Français"), ("de", "Deutsch"), ("ko", "한국어"),
-        ("pt", "Português"), ("it", "Italiano"),
-    ]
+    private var langs: [(code: String, label: String)] {
+        SupportedLanguage.all.map { ($0.code, $0.label) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {

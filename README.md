@@ -18,7 +18,9 @@ Word translation: select any word and get a Wikipedia-powered card in one of eig
 
 Chapter video overviews: click the video icon on any chapter's first page in two-page mode, or on the chapter row in the outline sidebar. Cogito extracts that chapter, uploads it to Google NotebookLM with an animation brief, and streams generation progress. The finished MP4 plays in a full-window overlay with captions. Chapters with existing videos show a green checkmark in the outline.
 
-On-device LLM: Gemma 3n E4B via mlx-swift detects chapter structure from TOC pages when the PDF has no outline. Runs on the Apple Silicon Neural Engine, no internet required.
+Ask Question (Cmd+J): type a question, and RAG retrieval finds the most relevant page instantly via BM25 keyword matching. The app navigates there, highlights the key term, and streams an ELI12-style answer from the on-device LLM with a closing metaphor in the reader's target language.
+
+On-device LLM: Gemma 4 E4B via mlx-swift handles TOC detection, Ask Question answers, and mind map generation. Runs on the Apple Silicon Neural Engine, no internet required.
 
 ## Architecture
 
@@ -43,7 +45,7 @@ graph TD
 
         subgraph Svc[" Services "]
             direction LR
-            LLM["LLMService\nGemma 3n E4B\non-device"]
+            LLM["LLMService\nGemma 4 E4B\non-device"]
             WTS["WikiTranslationService"]
             NLM["NotebookLMService\nProcess actor"]
         end

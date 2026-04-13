@@ -123,6 +123,21 @@ class PDFViewModel: ObservableObject {
     @Published var bookmarks: Set<Int> = []
     @Published var cornellNotes: [Int: String] = [:]
 
+    // MARK: Ask Question (RAG)
+    @Published var isAskBarVisible: Bool = false
+    @Published var askQuery: String = ""
+    @Published var isAskingQuestion: Bool = false
+    @Published var askAnswer: String?
+    private var askTask: Task<Void, Never>?
+    private var pageTextIndex: [(pageIndex: Int, text: String)] = []
+
+    // MARK: LLM Status
+    @Published var llmState: LLMService.State = .idle
+
+    func refreshLLMState() {
+        Task { llmState = await LLMService.shared.state }
+    }
+
     // MARK: Translation
     @Published var selectedWord: String?
     @Published var wordTranslation: WikiTranslation?
@@ -130,7 +145,7 @@ class PDFViewModel: ObservableObject {
     @Published var translationError: String?
     @Published var selectionYFraction: CGFloat?
     @Published var selectionOnLeftPage: Bool = false
-    @Published var translationLang: String = UserDefaults.standard.string(forKey: "translationLang") ?? "zh" {
+    @Published var translationLang: String = UserDefaults.standard.string(forKey: "translationLang") ?? "zh-tw" {
         didSet { UserDefaults.standard.set(translationLang, forKey: "translationLang") }
     }
 
@@ -262,6 +277,7 @@ class PDFViewModel: ObservableObject {
         if nodes.isEmpty {
             inferOutlineWithLLM(doc: doc)
         }
+        Task { buildPageTextIndex(doc: doc) }
         refreshCachedVideos()
         restoreReadingProgress()
     }
@@ -963,5 +979,433 @@ class PDFViewModel: ObservableObject {
         let path = mindmapPath(for: title)
         guard let data = try? JSONEncoder().encode(node) else { return }
         try? data.write(to: path)
+    }
+
+    // MARK: - Ask Question (RAG)
+
+    /// Build a per-page text index when a document is opened.
+    private func buildPageTextIndex(doc: PDFDocument) {
+        pageTextIndex = (0..<doc.pageCount).compactMap { i in
+            guard let page = doc.page(at: i),
+                  let text = PDFTextExtractor.text(from: page),
+                  text.count > 50 else { return nil }
+            return (pageIndex: i, text: text)
+        }
+    }
+
+    /// BM25-lite retrieval: score each page by query term overlap.
+    private func retrievePages(query: String, topK: Int = 5) -> [(pageIndex: Int, text: String)] {
+        let queryTerms = tokenize(query)
+        guard !queryTerms.isEmpty else { return [] }
+
+        // Inverse document frequency: penalize terms that appear on many pages
+        let totalDocs = Double(pageTextIndex.count)
+        var docFreq: [String: Int] = [:]
+        for entry in pageTextIndex {
+            let pageTokens = Set(tokenize(entry.text))
+            for term in queryTerms where pageTokens.contains(term) {
+                docFreq[term, default: 0] += 1
+            }
+        }
+
+        var scored: [(index: Int, score: Double)] = []
+        for (i, entry) in pageTextIndex.enumerated() {
+            let pageText = entry.text.lowercased()
+            var score = 0.0
+            for term in queryTerms {
+                let tf = Double(Self.countOccurrences(of: term, in: pageText))
+                guard tf > 0 else { continue }
+                let df = Double(docFreq[term] ?? 1)
+                let idf = log((totalDocs + 1) / (df + 1)) + 1
+                score += tf * idf
+            }
+            if score > 0 {
+                scored.append((index: i, score: score))
+            }
+        }
+
+        return scored
+            .sorted { $0.score > $1.score }
+            .prefix(topK)
+            .map { pageTextIndex[$0.index] }
+    }
+
+    /// Extract text passages (windows) around keyword occurrences.
+    /// Returns surrounding context for each hit, merged if overlapping.
+    private static func extractPassages(from text: String, matching terms: [String], windowChars: Int) -> [String] {
+        let lower = text.lowercased()
+        var ranges: [(Int, Int)] = []
+
+        // Find all occurrences of each term and collect character ranges
+        for term in terms {
+            var searchStart = lower.startIndex
+            while let found = lower.range(of: term, range: searchStart..<lower.endIndex) {
+                let center = lower.distance(from: lower.startIndex, to: found.lowerBound)
+                let start = max(0, center - windowChars / 2)
+                let end = min(text.count, center + term.count + windowChars / 2)
+                ranges.append((start, end))
+                searchStart = found.upperBound
+            }
+        }
+
+        guard !ranges.isEmpty else { return [] }
+
+        // Sort and merge overlapping ranges
+        let sorted = ranges.sorted { $0.0 < $1.0 }
+        var merged: [(Int, Int)] = [sorted[0]]
+        for r in sorted.dropFirst() {
+            if r.0 <= merged[merged.count - 1].1 {
+                merged[merged.count - 1].1 = max(merged[merged.count - 1].1, r.1)
+            } else {
+                merged.append(r)
+            }
+        }
+
+        // Extract the text for each merged range
+        return merged.compactMap { (start, end) in
+            let s = text.index(text.startIndex, offsetBy: start, limitedBy: text.endIndex) ?? text.startIndex
+            let e = text.index(text.startIndex, offsetBy: end, limitedBy: text.endIndex) ?? text.endIndex
+            let passage = String(text[s..<e]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return passage.isEmpty ? nil : passage
+        }
+    }
+
+    private static func countOccurrences(of term: String, in text: String) -> Int {
+        var count = 0
+        var searchRange = text.startIndex..<text.endIndex
+        while let range = text.range(of: term, range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<text.endIndex
+        }
+        return count
+    }
+
+    private func tokenize(_ text: String) -> [String] {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 }
+    }
+
+    func askQuestion() {
+        let query = askQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, let doc = document else { return }
+
+        askTask?.cancel()
+        isAskingQuestion = true
+        askAnswer = nil
+
+        askTask = Task {
+            defer { isAskingQuestion = false }
+
+            // Retrieve top pages by keyword matching (fast, no LLM)
+            let topPages = retrievePages(query: query)
+            guard !topPages.isEmpty else {
+                askAnswer = "No relevant content found in this book."
+                return
+            }
+
+            // Navigate to the best page immediately (before LLM answers)
+            let targetPage = topPages[0].pageIndex
+            goToPage(targetPage)
+            highlightQueryTerms(query: query, near: targetPage, doc: doc)
+
+            // Build context: extract text surrounding keyword occurrences on each page
+            let queryTerms = tokenize(query).filter { !Self.stopWords.contains($0) }
+            var context = ""
+            var charCount = 0
+            let charLimit = 4000
+            for entry in topPages {
+                guard charCount < charLimit else { break }
+                // Extract passages around keyword hits rather than using the full page
+                let passages = Self.extractPassages(from: entry.text, matching: queryTerms, windowChars: 400)
+                let pageContext = passages.isEmpty
+                    ? String(entry.text.prefix(charLimit - charCount))
+                    : passages.joined(separator: " ... ")
+                let snippet = String(pageContext.prefix(charLimit - charCount))
+                context += "--- Page \(entry.pageIndex + 1) ---\n\(snippet)\n\n"
+                charCount += snippet.count
+            }
+
+            let isDefinitionQuery = query.lowercased().hasPrefix("what is ")
+                || query.lowercased().hasPrefix("what are ")
+                || query.lowercased().hasPrefix("define ")
+
+            let langName = SupportedLanguage.englishName(for: translationLang)
+
+            let style = isDefinitionQuery
+                ? """
+                 The reader has NO technical background. Write your answer so a \
+                smart 12-year-old can understand it:
+                - Replace every technical term with a simple everyday word or a brief definition in parentheses.
+                - Use short sentences. No jargon left unexplained.
+                - Include a concrete everyday example in English to illustrate the concept.
+                """
+                : " Your answer must be self-contained. Briefly define any technical terms you use."
+
+            let metaphor = """
+
+            After your answer, add a blank line, then write ONE metaphor in \(langName).
+            Format: 💡 <metaphor>
+            Requirements for the metaphor:
+            - Write it so a 12-year-old with zero technical knowledge understands instantly.
+            - Use an everyday object or experience the child already knows (cooking, toys, school, games, drawing).
+            - The metaphor must map the core concept to that everyday thing in 1 sentence.
+            - No jargon, no technical words, no English terms. Pure simple \(langName).
+            """
+
+            let prompt = """
+            A reader asks: "\(query)"
+
+            BOOK TEXT (prioritize this to answer):
+            \(context)
+            END OF BOOK TEXT.
+
+            RULES:
+            - Answer in 3-5 sentences. Prioritize information from the book text above.
+            - Start with "From the book, ".
+            - Quote or closely paraphrase the book's own words when possible.
+            - You may add brief clarifications to make the answer self-contained.\(style)\(metaphor)
+            """
+
+            // Stream answer token by token, post-process the full buffer for math symbols
+            var rawAnswer = ""
+            askAnswer = ""
+            do {
+                let stream = await LLMService.shared.generate(
+                    prompt: prompt,
+                    systemPrompt: "You answer questions prioritizing provided book excerpts. Quote the book's language when possible, and add brief clarifications only when needed for clarity. Use unicode math symbols (μ, σ, σ², x̂, θ, α, β, ε, λ, π) instead of writing out Greek letter names or LaTeX.",
+                    maxTokens: 450
+                )
+                for try await token in stream {
+                    if Task.isCancelled { return }
+                    rawAnswer += token
+                    askAnswer = Self.fixMathSymbols(rawAnswer)
+                }
+            } catch {
+                if rawAnswer.isEmpty {
+                    askAnswer = "Could not generate an answer."
+                }
+            }
+        }
+    }
+
+    /// Post-process LLM output: strip LaTeX markup and convert to unicode.
+    private static let latexCommands: [(String, String)] = [
+        ("\\mathbf", ""), ("\\mathrm", ""), ("\\mathit", ""),
+        ("\\mathcal", ""), ("\\mathbb", ""), ("\\text", ""),
+        ("\\operatorname", ""), ("\\boldsymbol", ""),
+        ("\\sigma", "σ"), ("\\Sigma", "Σ"),
+        ("\\mu", "μ"), ("\\nu", "ν"),
+        ("\\theta", "θ"), ("\\Theta", "Θ"),
+        ("\\alpha", "α"), ("\\beta", "β"),
+        ("\\gamma", "γ"), ("\\Gamma", "Γ"),
+        ("\\delta", "δ"), ("\\Delta", "Δ"),
+        ("\\epsilon", "ε"), ("\\varepsilon", "ε"),
+        ("\\lambda", "λ"), ("\\Lambda", "Λ"),
+        ("\\phi", "φ"), ("\\varphi", "φ"), ("\\Phi", "Φ"),
+        ("\\psi", "ψ"), ("\\Psi", "Ψ"),
+        ("\\omega", "ω"), ("\\Omega", "Ω"),
+        ("\\pi", "π"), ("\\Pi", "Π"),
+        ("\\rho", "ρ"), ("\\tau", "τ"),
+        ("\\eta", "η"), ("\\zeta", "ζ"),
+        ("\\chi", "χ"), ("\\xi", "ξ"), ("\\kappa", "κ"),
+        ("\\partial", "∂"), ("\\nabla", "∇"),
+        ("\\infty", "∞"), ("\\infinity", "∞"),
+        ("\\approx", "≈"), ("\\neq", "≠"), ("\\ne", "≠"),
+        ("\\leq", "≤"), ("\\geq", "≥"), ("\\le", "≤"), ("\\ge", "≥"),
+        ("\\rightarrow", "→"), ("\\leftarrow", "←"),
+        ("\\Rightarrow", "⇒"), ("\\Leftarrow", "⇐"),
+        ("\\in", "∈"), ("\\notin", "∉"),
+        ("\\subset", "⊂"), ("\\subseteq", "⊆"),
+        ("\\times", "×"), ("\\cdot", "·"),
+        ("\\ldots", "..."), ("\\dots", "..."), ("\\cdots", "..."),
+        ("\\sim", "~"), ("\\propto", "∝"),
+        ("\\sum", "Σ"), ("\\prod", "Π"), ("\\int", "∫"),
+        ("\\log", "log"), ("\\exp", "exp"),
+        ("\\hat", "\u{0302}"), ("\\tilde", "\u{0303}"), ("\\bar", "\u{0304}"),
+        ("\\left", ""), ("\\right", ""),
+        ("\\,", " "), ("\\;", " "), ("\\!", ""), ("\\quad", " "),
+    ]
+
+    private static let superscriptMap: [Character: Character] = [
+        "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+        "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+        "n": "ⁿ", "i": "ⁱ", "k": "ᵏ", "T": "ᵀ",
+        "+": "⁺", "-": "⁻",
+    ]
+
+    private static let subscriptMap: [Character: Character] = [
+        "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄",
+        "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+        "i": "ᵢ", "j": "ⱼ", "k": "ₖ", "n": "ₙ", "t": "ₜ",
+        "+": "₊", "-": "₋",
+    ]
+
+    private static let plainGreek: [(String, String)] = [
+        ("sigma", "σ"), ("Sigma", "Σ"),
+        ("theta", "θ"), ("alpha", "α"), ("beta", "β"),
+        ("gamma", "γ"), ("delta", "δ"), ("epsilon", "ε"),
+        ("lambda", "λ"), ("Lambda", "Λ"),
+        ("phi", "φ"), ("omega", "ω"),
+    ]
+
+    private static func fixMathSymbols(_ text: String) -> String {
+        var s = text
+        s = s.replacingOccurrences(of: "$$", with: "")
+        s = s.replacingOccurrences(of: "$", with: "")
+        for (cmd, replacement) in latexCommands {
+            s = s.replacingOccurrences(of: cmd, with: replacement)
+        }
+        s = s.replacingOccurrences(of: "{", with: "")
+        s = s.replacingOccurrences(of: "}", with: "")
+        s = replaceScripts(in: s, marker: "^", map: superscriptMap)
+        s = replaceScripts(in: s, marker: "_", map: subscriptMap)
+        for (name, sym) in plainGreek {
+            s = s.replacingOccurrences(of: "\\b\(name)\\b", with: sym, options: .regularExpression)
+        }
+        return s
+    }
+
+    /// Replace ^x or _x with the corresponding super/subscript unicode character.
+    private static func replaceScripts(in text: String, marker: String, map: [Character: Character]) -> String {
+        var result = ""
+        var chars = text[text.startIndex...]
+        let markerChar = marker.first!
+        while let idx = chars.firstIndex(of: markerChar) {
+            result += chars[chars.startIndex..<idx]
+            let afterIdx = chars.index(after: idx)
+            if afterIdx < chars.endIndex, let replacement = map[chars[afterIdx]] {
+                result.append(replacement)
+                chars = chars[chars.index(after: afterIdx)...]
+            } else {
+                result.append(markerChar)
+                chars = chars[afterIdx...]
+            }
+        }
+        result += chars
+        return result
+    }
+
+    func clearAsk() {
+        askTask?.cancel()
+        askQuery = ""
+        askAnswer = nil
+        isAskingQuestion = false
+        isAskBarVisible = false
+        pdfView?.clearSelection()
+    }
+
+    private static let stopWords: Set<String> = [
+        "what", "which", "where", "when", "how", "who", "whom", "why",
+        "the", "this", "that", "these", "those", "and", "but", "for",
+        "not", "are", "was", "were", "been", "being", "have", "has",
+        "had", "does", "did", "will", "would", "could", "should",
+        "may", "might", "can", "about", "with", "from", "into",
+        "between", "through", "during", "before", "after", "above",
+        "below", "all", "each", "every", "both", "few", "more",
+        "most", "other", "some", "such", "than", "too", "very",
+        "just", "also", "only", "own", "same", "then", "once",
+        "here", "there", "its", "let", "say", "she", "his", "her",
+        "they", "them", "their", "our", "your", "out", "off",
+        "over", "under", "again", "further", "explain", "define",
+        "tell", "describe", "mean", "means", "meaning",
+    ]
+
+    /// Highlight the first defining mention of the query subject on or near the target page.
+    /// For abbreviations like "VAE", tries to find the expanded form (e.g. "variational autoencoder (VAE)")
+    /// and highlights the full sentence fragment rather than just the abbreviation.
+    private func highlightQueryTerms(query: String, near pageIndex: Int, doc: PDFDocument) {
+        let terms = query.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 && !Self.stopWords.contains($0) }
+
+        guard !terms.isEmpty else { return }
+
+        let subject = terms.joined(separator: " ")
+
+        // Extract text from the target page and neighbors to find the defining context
+        let searchRange = max(0, pageIndex - 1)..<min(doc.pageCount, pageIndex + 2)
+        let pageText = PDFTextExtractor.text(from: doc, pages: searchRange)
+
+        // Look for a definition pattern: "full name (ABBREV)" or "ABBREV, or full name"
+        // e.g. "variational autoencoder (VAE)" or "VAE (variational autoencoder)"
+        if let defPhrase = findDefinitionPhrase(for: subject, in: pageText) {
+            let results = doc.findString(defPhrase, withOptions: [.caseInsensitive])
+            if let match = findOnPage(results, near: pageIndex, doc: doc) {
+                applyHighlight(match)
+                return
+            }
+        }
+
+        // Fall back: find the first occurrence of the subject term on the page
+        let results = doc.findString(subject, withOptions: [.caseInsensitive])
+        if let match = findOnPage(results, near: pageIndex, doc: doc) {
+            applyHighlight(match)
+            return
+        }
+
+        // Last resort: try individual terms
+        for term in terms.sorted(by: { $0.count > $1.count }) {
+            let results = doc.findString(term, withOptions: [.caseInsensitive])
+            if let match = findOnPage(results, near: pageIndex, doc: doc) {
+                applyHighlight(match)
+                return
+            }
+        }
+    }
+
+    /// Searches text for a definition pattern around a term, e.g. "variational autoencoder (VAE)".
+    /// Returns the full phrase if found, nil otherwise.
+    private func findDefinitionPhrase(for term: String, in text: String) -> String? {
+        let lower = text.lowercased()
+        let termLower = term.lowercased()
+
+        // Pattern 1: "full name (TERM)" - e.g. "variational autoencoder (VAE)"
+        // Look for "(term)" and grab the preceding words
+        let parenPattern = "(\(NSRegularExpression.escapedPattern(for: termLower)))"
+        if let parenRange = lower.range(of: parenPattern, options: .caseInsensitive) {
+            // Walk backwards from the opening paren to grab 2-5 preceding words
+            let beforeParen = text[text.startIndex..<parenRange.lowerBound]
+                .trimmingCharacters(in: .whitespaces)
+            let words = beforeParen.split(separator: " ").suffix(5)
+            if words.count >= 2 {
+                let fullPhrase = words.joined(separator: " ") + " " + String(text[parenRange])
+                return fullPhrase
+            }
+        }
+
+        // Pattern 2: "TERM (full name)" - e.g. "VAE (variational autoencoder)"
+        if let termRange = lower.range(of: termLower) {
+            let afterTerm = text[termRange.upperBound...]
+            if afterTerm.hasPrefix(" (") || afterTerm.hasPrefix("(") {
+                if let closeParen = afterTerm.firstIndex(of: ")") {
+                    let fullPhrase = String(text[termRange.lowerBound...closeParen])
+                    if fullPhrase.count < 80 { return fullPhrase }
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func findOnPage(_ selections: [PDFSelection], near pageIndex: Int, doc: PDFDocument) -> PDFSelection? {
+        for radius in [0, 1, 2] {
+            if let match = selections.first(where: { sel in
+                guard let p = sel.pages.first else { return false }
+                return abs(doc.index(for: p) - pageIndex) <= radius
+            }) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    private func applyHighlight(_ selection: PDFSelection) {
+        suppressSelectionLookup = true
+        pdfView?.setCurrentSelection(selection, animate: true)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            self.suppressSelectionLookup = false
+        }
     }
 }
