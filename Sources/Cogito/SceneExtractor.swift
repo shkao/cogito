@@ -288,10 +288,8 @@ actor SceneExtractor {
 
         // Build 64-bit hash: bit i is 1 if pixel i > median
         var hash: UInt64 = 0
-        for i in 0..<min(totalBytes, 64) {
-            if buf[i] > median {
-                hash |= 1 << i
-            }
+        for i in 0..<min(totalBytes, 64) where buf[i] > median {
+            hash |= 1 << i
         }
         return hash
     }

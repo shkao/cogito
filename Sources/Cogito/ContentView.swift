@@ -837,11 +837,8 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
     /// Index of the scene whose timestamp is closest to (but not after) current playback.
     var activeSceneIndex: Int? {
         guard !sceneFrames.isEmpty else { return nil }
-        var best: Int?
-        for (i, frame) in sceneFrames.enumerated() {
-            if frame.time <= progress { best = i }
-        }
-        return best
+        return sceneFrames.enumerated()
+            .last(where: { $0.element.time <= progress })?.offset
     }
 }
 
