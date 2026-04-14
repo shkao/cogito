@@ -100,8 +100,7 @@ struct OutlineSidebarView: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         expandedNodes = path
                     }
-                    let result = flattenOutline(nodes: vm.outlineNodes, expandedNodes: path, activePath: path)
-                    if let deepest = result.deepestActiveID {
+                    if let deepest = deepestActiveNode(in: vm.outlineNodes, activePath: path) {
                         withAnimation {
                             proxy.scrollTo(deepest, anchor: .center)
                         }
@@ -125,11 +124,19 @@ struct FlatOutlineResult {
     let deepestActiveID: UUID?
 }
 
+/// Walks only the active path to find the deepest active node ID, avoiding a full tree flatten.
+private func deepestActiveNode(in nodes: [OutlineNode], activePath: Set<UUID>) -> UUID? {
+    guard let match = nodes.last(where: { activePath.contains($0.id) }) else { return nil }
+    if let kids = match.children, kids.contains(where: { activePath.contains($0.id) }) {
+        return deepestActiveNode(in: kids, activePath: activePath)
+    }
+    return match.id
+}
+
 private func flattenOutline(
     nodes: [OutlineNode],
     expandedNodes: Set<UUID>,
-    activePath: Set<UUID>,
-    depth: Int = 0
+    activePath: Set<UUID>
 ) -> FlatOutlineResult {
     var items: [FlatOutlineItem] = []
     var deepestActiveID: UUID?
@@ -148,7 +155,7 @@ private func flattenOutline(
             }
         }
     }
-    walk(nodes, depth: depth)
+    walk(nodes, depth: 0)
     return FlatOutlineResult(items: items, deepestActiveID: deepestActiveID)
 }
 

@@ -92,6 +92,14 @@ class PDFViewModel: ObservableObject {
             case 123: // left arrow
                 Task { @MainActor [weak self] in self?.previousChapter() }
                 return nil
+            case 49: // space
+                guard self.playingVideoURL == nil else { return event }
+                if let node = self.currentChapterNode(),
+                   let url = self.videoURL(for: node.label) {
+                    Task { @MainActor [weak self] in self?.playingVideoURL = url }
+                    return nil
+                }
+                return event
             default:
                 return event
             }
@@ -171,6 +179,7 @@ class PDFViewModel: ObservableObject {
 
     @Published var displayingMindmap: MindmapDisplay?
     @Published var mindmapGenerating: Set<String> = []
+    @Published private(set) var cachedMindmapTitles: Set<String> = []
     private var mindmapTasks: [String: Task<Void, Never>] = [:]
 
     @Published var videoFormat: VideoFormat = VideoFormat(rawValue: UserDefaults.standard.string(forKey: "videoFormat") ?? "") ?? .explainer {
@@ -279,6 +288,7 @@ class PDFViewModel: ObservableObject {
         }
         Task { buildPageTextIndex(doc: doc) }
         refreshCachedVideos()
+        refreshCachedMindmaps()
         restoreReadingProgress()
     }
 
@@ -542,6 +552,15 @@ class PDFViewModel: ObservableObject {
         outlineNodes.first { $0.pageIndex == pageIndex && isContentChapter($0) }
     }
 
+    /// Returns the content chapter node visible on the current spread, if any.
+    func currentChapterNode() -> OutlineNode? {
+        let pages = displayMode.isTwoPage
+            ? spreadPages
+            : (left: currentPageIndex, right: currentPageIndex)
+        return chapterNode(at: pages.left)
+            ?? (pages.right != pages.left ? chapterNode(at: pages.right) : nil)
+    }
+
     func chapterPageRange(for node: OutlineNode) -> Range<Int> {
         func searchSiblings(_ siblings: [OutlineNode]) -> Range<Int>? {
             guard let idx = siblings.firstIndex(where: { $0.id == node.id }) else {
@@ -602,8 +621,7 @@ class PDFViewModel: ObservableObject {
     }
 
     func hasVideo(for title: String) -> Bool {
-        let target = sanitizeTitle(title)
-        return cachedVideos.contains { videoTitle(from: $0) == target }
+        videoURL(for: title) != nil
     }
 
     func videoURL(for title: String) -> URL? {
@@ -612,9 +630,16 @@ class PDFViewModel: ObservableObject {
     }
 
     func videoTitle(from url: URL) -> String {
-        let base = url.deletingPathExtension().lastPathComponent
-        guard base.count > 7, base.dropFirst(base.count - 7).first == "_" else { return base }
-        return String(base.dropLast(7))
+        Self.stripBookHash(url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Strips the trailing "_<6-char hex hash>" suffix from a cache filename.
+    static func stripBookHash(_ name: String) -> String {
+        let suffixLen = 1 + 6
+        guard name.count > suffixLen,
+              name[name.index(name.endIndex, offsetBy: -suffixLen)] == "_"
+        else { return name }
+        return String(name.dropLast(suffixLen))
     }
 
     private func sanitizeTitle(_ title: String) -> String {
@@ -946,20 +971,37 @@ class PDFViewModel: ObservableObject {
     }
 
     func hasMindmap(for title: String) -> Bool {
-        FileManager.default.fileExists(atPath: mindmapPath(for: title).path)
+        cachedMindmapTitles.contains(sanitizeTitle(title))
     }
 
     func deleteMindmap(for title: String) {
         try? FileManager.default.removeItem(at: mindmapPath(for: title))
+        cachedMindmapTitles.remove(sanitizeTitle(title))
+    }
+
+    func refreshCachedMindmaps() {
+        let dir = mindmapOutputDir()
+        let hash = bookHash
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles
+        )) ?? []
+        cachedMindmapTitles = Set(files
+            .filter { $0.pathExtension == "json" && $0.lastPathComponent.contains("_\(hash)") }
+            .map { Self.stripBookHash($0.deletingPathExtension().lastPathComponent) })
     }
 
     private func parseMindmapJSON(_ response: String) -> MindmapNode? {
+        guard let jsonStr = extractJSONObject(from: response),
+              let data = jsonStr.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(MindmapNode.self, from: data)
+    }
+
+    /// Extracts a JSON object substring from an LLM response that may contain preamble/postamble.
+    private func extractJSONObject(from response: String) -> String? {
         guard let start = response.range(of: "{"),
               let end = response.range(of: "}", options: .backwards),
               start.lowerBound <= end.lowerBound else { return nil }
-        let jsonStr = String(response[start.lowerBound..<end.upperBound])
-        guard let data = jsonStr.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(MindmapNode.self, from: data)
+        return String(response[start.lowerBound..<end.upperBound])
     }
 
     private func mindmapOutputDir() -> URL { cacheSubdir("Mindmaps") }
@@ -979,17 +1021,25 @@ class PDFViewModel: ObservableObject {
         let path = mindmapPath(for: title)
         guard let data = try? JSONEncoder().encode(node) else { return }
         try? data.write(to: path)
+        cachedMindmapTitles.insert(sanitizeTitle(title))
     }
 
     // MARK: - Ask Question (RAG)
 
     /// Build a per-page text index when a document is opened.
+    /// Extraction runs on a background thread to avoid blocking the UI for large PDFs.
     private func buildPageTextIndex(doc: PDFDocument) {
-        pageTextIndex = (0..<doc.pageCount).compactMap { i in
-            guard let page = doc.page(at: i),
-                  let text = PDFTextExtractor.text(from: page),
-                  text.count > 50 else { return nil }
-            return (pageIndex: i, text: text)
+        let count = doc.pageCount
+        Task.detached(priority: .utility) {
+            let index: [(pageIndex: Int, text: String)] = (0..<count).compactMap { i in
+                guard let page = doc.page(at: i),
+                      let text = PDFTextExtractor.text(from: page),
+                      text.count > 50 else { return nil }
+                return (pageIndex: i, text: text)
+            }
+            await MainActor.run { [index] in
+                self.pageTextIndex = index
+            }
         }
     }
 
@@ -1167,7 +1217,7 @@ class PDFViewModel: ObservableObject {
             - You may add brief clarifications to make the answer self-contained.\(style)\(metaphor)
             """
 
-            // Stream answer token by token, post-process the full buffer for math symbols
+            // Stream answer token by token; post-process once at the end
             var rawAnswer = ""
             askAnswer = ""
             do {
@@ -1180,14 +1230,23 @@ class PDFViewModel: ObservableObject {
                         + "Greek letter names or LaTeX.",
                     maxTokens: 450
                 )
+                var tokenCount = 0
                 for try await token in stream {
                     if Task.isCancelled { return }
                     rawAnswer += token
-                    askAnswer = Self.fixMathSymbols(rawAnswer)
+                    tokenCount += 1
+                    if tokenCount % 50 == 0 {
+                        askAnswer = Self.fixMathSymbols(rawAnswer)
+                    } else {
+                        askAnswer = rawAnswer
+                    }
                 }
+                askAnswer = Self.fixMathSymbols(rawAnswer)
             } catch {
                 if rawAnswer.isEmpty {
                     askAnswer = "Could not generate an answer."
+                } else {
+                    askAnswer = Self.fixMathSymbols(rawAnswer)
                 }
             }
         }
@@ -1245,13 +1304,20 @@ class PDFViewModel: ObservableObject {
         "+": "₊", "-": "₋",
     ]
 
-    private static let plainGreek: [(String, String)] = [
-        ("sigma", "σ"), ("Sigma", "Σ"),
-        ("theta", "θ"), ("alpha", "α"), ("beta", "β"),
-        ("gamma", "γ"), ("delta", "δ"), ("epsilon", "ε"),
-        ("lambda", "λ"), ("Lambda", "Λ"),
-        ("phi", "φ"), ("omega", "ω"),
+    private static let plainGreekMap: [String: String] = [
+        "sigma": "σ", "Sigma": "Σ",
+        "theta": "θ", "alpha": "α", "beta": "β",
+        "gamma": "γ", "delta": "δ", "epsilon": "ε",
+        "lambda": "λ", "Lambda": "Λ",
+        "phi": "φ", "omega": "ω",
     ]
+
+    // Single compiled regex matching any plain Greek letter name as a whole word
+    private static let plainGreekRegex: NSRegularExpression? = {
+        let names = plainGreekMap.keys.sorted(by: { $0.count > $1.count })
+        let pattern = "\\b(" + names.joined(separator: "|") + ")\\b"
+        return try? NSRegularExpression(pattern: pattern)
+    }()
 
     private static func fixMathSymbols(_ text: String) -> String {
         var s = text
@@ -1264,8 +1330,18 @@ class PDFViewModel: ObservableObject {
         s = s.replacingOccurrences(of: "}", with: "")
         s = replaceScripts(in: s, marker: "^", map: superscriptMap)
         s = replaceScripts(in: s, marker: "_", map: subscriptMap)
-        for (name, sym) in plainGreek {
-            s = s.replacingOccurrences(of: "\\b\(name)\\b", with: sym, options: .regularExpression)
+        if let regex = plainGreekRegex {
+            let nsRange = NSRange(s.startIndex..., in: s)
+            let matches = regex.matches(in: s, range: nsRange).reversed()
+            var result = s
+            for match in matches {
+                guard let swiftRange = Range(match.range, in: result) else { continue }
+                let name = String(result[swiftRange])
+                if let sym = plainGreekMap[name] {
+                    result.replaceSubrange(swiftRange, with: sym)
+                }
+            }
+            s = result
         }
         return s
     }

@@ -228,14 +228,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func chapterVideoOverlay() -> some View {
-        let pages = vm.displayMode.isTwoPage ? vm.spreadPages : (left: vm.currentPageIndex, right: vm.currentPageIndex)
-        let leftNode = vm.chapterNode(at: pages.left)
-        let rightNode: OutlineNode? = {
-            guard pages.right != pages.left, pages.right < vm.totalPages else { return nil }
-            return vm.chapterNode(at: pages.right)
-        }()
-
-        if let node = leftNode ?? rightNode {
+        if let node = vm.currentChapterNode() {
             VStack {
                 Spacer()
                 chapterVideoButton(node: node)
@@ -491,10 +484,9 @@ struct AskBarView: View {
         .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
         .frame(maxWidth: 580)
         .padding(.horizontal, 40)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                isFocused = true
-            }
+        .task {
+            try? await Task.sleep(for: .milliseconds(200))
+            isFocused = true
         }
     }
 }
@@ -734,17 +726,24 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
     @Published var isSeeking = false
     @Published var currentCaption: String?
     @Published var captionsEnabled = true
+    @Published var sceneFrames: [SceneFrame] = []
+    @Published var isLoadingScenes = false
 
     private var timeObserver: Any?
+    private var sceneTask: Task<Void, Never>?
     private var legibleOutput: AVPlayerItemLegibleOutput?
     private var captionsTask: Task<Void, Never>?
 
+    private let videoURL: URL
+
     init(url: URL) {
+        self.videoURL = url
         player = AVPlayer(url: url)
     }
 
     func start() {
         player.play()
+        loadScenes()
         Task {
             if let d = try? await player.currentItem?.asset.load(.duration), d.seconds > 0 {
                 duration = d.seconds
@@ -771,9 +770,24 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
         }
         captionsTask?.cancel()
         captionsTask = nil
+        sceneTask?.cancel()
+        sceneTask = nil
         if let out = legibleOutput {
             player.currentItem?.remove(out)
             legibleOutput = nil
+        }
+    }
+
+    private func loadScenes() {
+        isLoadingScenes = true
+        sceneTask = Task {
+            let frames = await SceneExtractor.shared.extractScenes(from: videoURL)
+            if Task.isCancelled {
+                self.isLoadingScenes = false
+                return
+            }
+            self.sceneFrames = frames
+            self.isLoadingScenes = false
         }
     }
 
@@ -813,12 +827,22 @@ private final class VideoPlayerModel: NSObject, ObservableObject {
         }
     }
 
-    private func formatTime(_ s: Double) -> String {
+    func formatTime(_ s: Double) -> String {
         let t = Int(max(0, s))
         return String(format: "%d:%02d", t / 60, t % 60)
     }
 
     var progressText: String { formatTime(progress) + " / " + formatTime(duration) }
+
+    /// Index of the scene whose timestamp is closest to (but not after) current playback.
+    var activeSceneIndex: Int? {
+        guard !sceneFrames.isEmpty else { return nil }
+        var best: Int?
+        for (i, frame) in sceneFrames.enumerated() {
+            if frame.time <= progress { best = i }
+        }
+        return best
+    }
 }
 
 extension VideoPlayerModel: AVPlayerItemLegibleOutputPushDelegate {
@@ -864,12 +888,13 @@ struct VideoOverlayView: View {
             VStack(spacing: 12) {
                 VideoLayerView(player: model.player)
                     .aspectRatio(16 / 9, contentMode: .fit)
-                    .frame(maxHeight: geo.size.height * 0.75)
+                    .frame(maxHeight: geo.size.height * 0.65)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .shadow(color: .black.opacity(0.5), radius: 24, y: 8)
                     .onAppear { model.start() }
                     .onDisappear { model.stop() }
                     .onTapGesture { model.togglePlay() }
+                    .onKeyPress(.space) { model.togglePlay(); return .handled }
                     .overlay(alignment: .topTrailing) {
                         Button { onClose() } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -896,6 +921,19 @@ struct VideoOverlayView: View {
                     }
                     .animation(.easeInOut(duration: 0.15), value: model.currentCaption)
                     .padding(.horizontal, 40)
+
+                // Scene thumbnails strip
+                if !model.sceneFrames.isEmpty {
+                    SceneStripView(model: model)
+                        .padding(.horizontal, 44)
+                } else if model.isLoadingScenes {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small).tint(.white)
+                        Text("Extracting scenes...")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                }
 
                 // Playback controls
                 HStack(spacing: 14) {
@@ -932,6 +970,65 @@ struct VideoOverlayView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(true)
         }
+        }
+    }
+}
+
+// MARK: - Scene Strip
+
+private struct SceneStripView: View {
+    @ObservedObject var model: VideoPlayerModel
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(model.sceneFrames.enumerated()), id: \.element.id) { index, frame in
+                        let isActive = model.activeSceneIndex == index
+                        Button {
+                            model.seek(to: frame.time)
+                            model.progress = frame.time
+                            if !model.isPlaying { model.togglePlay() }
+                        } label: {
+                            ZStack(alignment: .bottomTrailing) {
+                                Image(nsImage: frame.image)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 120, height: 68)
+                                    .clipped()
+
+                                Text(model.formatTime(frame.time))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(.black.opacity(0.6))
+                                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                                    .padding(3)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(isActive ? Color.accentColor : Color.clear, lineWidth: 2)
+                            )
+                            .shadow(
+                                color: isActive ? Color.accentColor.opacity(0.3) : .clear,
+                                radius: 4
+                            )
+                            .opacity(isActive ? 1.0 : 0.7)
+                        }
+                        .buttonStyle(.plain)
+                        .id(frame.id)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .onChange(of: model.activeSceneIndex) { _, newIndex in
+                guard let newIndex, newIndex < model.sceneFrames.count else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(model.sceneFrames[newIndex].id, anchor: .center)
+                }
+            }
         }
     }
 }
